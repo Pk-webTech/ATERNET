@@ -1,0 +1,15 @@
+# Core numerics. numpy is unpinned above 2.0 deliberately: the <2.0 bound
+# in the original file was never required by anything here, and it blocks
+# installation alongside current pandas/torch builds.
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.3
+pyarrow>=14.0
+tqdm>=4.66
+PyYAML>=6.0
+matplotlib>=3.7
+torch>=2.1
+
+# Tests
+pytest>=7.4

@@ -1,0 +1,43 @@
+# Data & artifacts
+data/raw/*
+data/interim/*
+data/processed/*
+data/cache/*
+!data/raw/**/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+
+checkpoints/*
+!checkpoints/.gitkeep
+
+outputs/*
+!outputs/**/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+experiments/*
+!experiments/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Test / tooling
+.pytest_cache/
+
+# Misc
+*.log
+*.tmp
