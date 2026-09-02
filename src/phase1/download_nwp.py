@@ -1,158 +1,212 @@
 """
-Phase 1 -- Feature engineering.
+Phase 1 -- NWP ensemble data acquisition (REAL DATA: ECMWF ERA5 via CDS).
 
-Merges cleaned PV + processed NWP series and derives every feature
-required by later phases:
-  - clear_sky_index                (PV physics-normalized signal)
-  - cyclical time features         (hour/day-of-year sin-cos)
-  - rule-based regime labels       (dawn_ramp / clear_peak / overcast / volatile)
-  - volatility features            (ramp-rate & rolling std, feed expert
-                                     disagreement estimation and the routing gate)
-  - sigma_nwp per-variable columns (renamed/aligned to SIGMA_FEATURES schema)
+Replaces the synthetic ensemble generator with actual ERA5 data pulled
+from the Copernicus Climate Data Store (`cdsapi`), for the 6 variables
+and Great Britain bounding box specified in project memory:
+    ssrd, tcc, 2t, 10u, 10v, sp   |   GB bbox, 2010-2026
 
-Rule-based regimes exist ONLY to stratify Phase-1 windows for balanced
-sampling and sanity-check plots. They are NOT the learned expert routing
-mechanism (that's Phase 4) -- they are a deterministic, reproducible prior.
+WHY "ensemble_members", NOT PLAIN "reanalysis"
+-------------------------------------------------
+`nwp_processor.py` (downstream, unchanged) computes sigma_nwp as the
+STD ACROSS ENSEMBLE MEMBERS at each timestamp -- and already treats a
+single-member group's std as 0 (see its `.fillna(0.0)`). Plain ERA5
+"reanalysis" is a single deterministic field. Swapping that in naively
+would silently zero out sigma_nwp everywhere, killing the uncertainty
+signal the entire Phase 4 routing gate is built around -- a much worse
+failure than it looks, because training would still run and produce
+plausible-looking numbers.
+
+CDS instead offers ERA5 in an `ensemble_members` product_type: a
+10-member EDA (Ensemble of Data Assimilations), 3-hourly, ~1 degree
+resolution -- coarser than the deterministic product, but it is a real
+spread estimate, which is the property this architecture actually
+needs. This module requests that product and reshapes it into the same
+long-format (timestamp, ensemble_member, ghi, cloud_cover, temp_c,
+wind_speed) that `nwp_processor.py` already expects, so nwp_processor.py
+and everything downstream of it needs ZERO changes.
+
+`ssrd` (surface solar radiation downwards) is a J/m^2 accumulated
+quantity in the CDS product, not an instantaneous W/m^2 rate like the
+`ghi` column downstream expects -- it's de-accumulated and divided by
+the accumulation period here.
+
+FLAGGED FOR VERIFICATION: exact CDS variable/product-type strings
+(`product_type`, `variable`, `number` semantics) can drift between CDS
+API versions and I can't browse cds.climate.copernicus.eu from this
+sandbox to confirm against current docs. Test with a small bbox/date
+range before committing to a full 2010-2026 pull.
 """
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
-from config.paths import PV_CLEAN_PATH, NWP_CLEAN_PATH, FEATURES_PATH
-from src.utils.constants import COL_TIMESTAMP, REGIME_LIST, REGIME_TO_ID
-from src.utils.helpers import add_time_features
+from config.paths import RAW_NWP_DIR, RAW_PV_DIR, CACHE_DIR
 from src.utils.logger import get_logger
-from src.utils.io import load_parquet, save_parquet
-from src.phase1.download_pv import _clear_sky_ghi
+from src.utils.io import save_parquet, load_parquet
 
 logger = get_logger(__name__)
 
+# Great Britain bounding box: North, West, South, East (CDS area order)
+GB_AREA = [61.0, -8.5, 49.5, 2.0]
 
-def merge_pv_nwp(pv_df: pd.DataFrame, nwp_df: pd.DataFrame) -> pd.DataFrame:
-    pv_df = pv_df.copy()
-    nwp_df = nwp_df.copy()
-    pv_df[COL_TIMESTAMP] = pd.to_datetime(pv_df["timestamp"])
-    nwp_df[COL_TIMESTAMP] = pd.to_datetime(nwp_df["timestamp"])
+CDS_VARIABLES = [
+    "surface_solar_radiation_downwards",  # ssrd
+    "total_cloud_cover",                  # tcc
+    "2m_temperature",                     # 2t
+    "10m_u_component_of_wind",            # 10u
+    "10m_v_component_of_wind",            # 10v
+    "surface_pressure",                   # sp
+]
 
-    merged = pd.merge(pv_df, nwp_df, on=COL_TIMESTAMP, how="inner", suffixes=("", "_nwp"))
-    merged = merged.sort_values(COL_TIMESTAMP).reset_index(drop=True)
+# 10-member EDA spread product. See module docstring re: verification.
+CDS_PRODUCT_TYPE = "ensemble_members"
+N_EDA_MEMBERS = 10
 
-    # Real uk_pv carries no irradiance/temperature -- only the synthetic
-    # generator populated ghi_measured/ambient_temp_c directly on the PV
-    # frame. When those columns are absent (real-data mode), fall back to
-    # the ERA5 ensemble-mean fields as the "observed weather" side of
-    # clear_sky_index. This is NOT a like-for-like substitute for a real
-    # pyranometer reading -- ERA5's own estimate is being used as both the
-    # "observed" and "forecast" input -- but it's the best available
-    # signal given uk_pv's schema, and strictly better than crashing on a
-    # missing column. Flag this clearly in any reviewer-facing write-up.
-    if "ghi_measured" not in merged.columns:
-        merged["ghi_measured"] = merged["nwp_ghi_mean"]
-    if "ambient_temp_c" not in merged.columns:
-        merged["ambient_temp_c"] = merged["nwp_temp_c_mean"]
-
-    return merged
+START_DATE = "2018-01-01"
+END_DATE = "2021-10-31"
 
 
-def add_clear_sky_index(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    clear_sky_ghi = _clear_sky_ghi(df["solar_elevation_deg"].values)
-    df["clear_sky_ghi"] = clear_sky_ghi
-    df["clear_sky_index"] = np.where(
-        clear_sky_ghi > 10.0, df["ghi_measured"] / np.clip(clear_sky_ghi, 10.0, None), 0.0
-    )
-    df["clear_sky_index"] = np.clip(df["clear_sky_index"], 0.0, 1.5)
-    return df
-
-
-def add_volatility_features(df: pd.DataFrame, freq_minutes: int = 15) -> pd.DataFrame:
-    df = df.copy()
-    steps_per_hour = max(1, 60 // freq_minutes)
-
-    df["ramp_rate"] = df["pv_norm"].diff().fillna(0.0)
-    df["ramp_rate_std"] = df["ramp_rate"].rolling(
-        window=steps_per_hour, min_periods=1
-    ).std().fillna(0.0)
-
-    df["rolling_std_1h"] = df["pv_norm"].rolling(
-        window=steps_per_hour, min_periods=1
-    ).std().fillna(0.0)
-    df["rolling_std_3h"] = df["pv_norm"].rolling(
-        window=3 * steps_per_hour, min_periods=1
-    ).std().fillna(0.0)
-    df["clear_sky_index_std"] = df["clear_sky_index"].rolling(
-        window=steps_per_hour, min_periods=1
-    ).std().fillna(0.0)
-    return df
-
-
-def assign_regime(df: pd.DataFrame) -> pd.DataFrame:
+def _fetch_era5_raw(start_date: str, end_date: str, area=GB_AREA) -> Path:
     """
-    Deterministic rule-based regime tagging used for stratified splitting
-    and sanity plots (see module docstring for scope).
+    Single cdsapi retrieve call for the full date range. For a multi-year
+    pull, CDS strongly prefers/queues large single requests over many
+    small ones; if this times out in practice, split by year and
+    concatenate -- the reshaping logic below is unaffected either way.
+
+    Requires a working ~/.cdsapirc (CDS API key). See:
+    https://cds.climate.copernicus.eu/how-to-api
     """
-    df = df.copy()
-    is_daylight = df["solar_elevation_deg"] > 2.0
+    import cdsapi
 
-    # Dawn/dusk ramp: low-but-rising elevation, meaningful positive ramp rate
-    is_ramp = is_daylight & (df["solar_elevation_deg"] < 20.0) & (df["ramp_rate"].abs() > 0.01)
+    out_path = CACHE_DIR / f"era5_eda_{start_date}_{end_date}.nc"
+    if out_path.exists():
+        logger.info(f"ERA5 EDA cache hit: {out_path}")
+        return out_path
 
-    # Clear peak: high clear-sky index, low short-term volatility
-    is_clear_peak = is_daylight & (df["clear_sky_index"] > 0.75) & (df["rolling_std_1h"] < 0.05)
+    dates = pd.date_range(start_date, end_date, freq="D")
+    years = sorted(dates.year.unique().astype(str).tolist())
+    months = sorted({f"{m:02d}" for m in dates.month.unique()})
+    days = sorted({f"{d:02d}" for d in range(1, 32)})
 
-    # Overcast: daylight but persistently low clear-sky index
-    is_overcast = is_daylight & (df["clear_sky_index"] <= 0.4) & (df["rolling_std_1h"] < 0.05)
+    client = cdsapi.Client()
+    request = {
+        "product_type": CDS_PRODUCT_TYPE,
+        "variable": CDS_VARIABLES,
+        "year": years,
+        "month": months,
+        "day": days,
+        "time": [f"{h:02d}:00" for h in range(0, 24, 3)],  # EDA is 3-hourly
+        "area": area,
+        "format": "netcdf",
+    }
+    logger.info(f"Submitting CDS request for {start_date}..{end_date} "
+                f"({len(years)} year(s), product_type={CDS_PRODUCT_TYPE}). "
+                f"This can take a long time to queue on CDS's end.")
+    client.retrieve("reanalysis-era5-single-levels", request, str(out_path))
+    logger.info(f"Saved raw ERA5 EDA NetCDF -> {out_path}")
+    return out_path
 
-    # Volatile: everything else with meaningful daylight and high short-term std
-    is_volatile = is_daylight & (df["rolling_std_1h"] >= 0.05)
 
-    regime = np.select(
-        [is_ramp, is_clear_peak, is_overcast, is_volatile],
-        ["dawn_ramp", "clear_peak", "overcast", "volatile"],
-        default="overcast",  # night / low-signal steps default to the flattest regime
-    )
-    df["regime"] = regime
-    df["regime_id"] = df["regime"].map(REGIME_TO_ID).astype(int)
+def _nearest_site_latlon() -> tuple:
+    """
+    Read the site lat/lon resolved by download_pv.py so the spatial join
+    targets the actual PV site rather than a hardcoded coordinate.
+    """
+    import json
+    resolved_path = Path(RAW_PV_DIR).parent / "metadata" / "resolved_site_metadata.json"
+    if not resolved_path.exists():
+        raise FileNotFoundError(
+            f"{resolved_path} not found -- run download_pv.py first so the "
+            f"real PV site's lat/lon is available for the ERA5 spatial join."
+        )
+    with open(resolved_path) as f:
+        meta = json.load(f)
+    return meta["latitude"], meta["longitude"]
 
-    for r in REGIME_LIST:
-        df[f"regime_{r}"] = (df["regime"] == r).astype(np.float32)
 
-    return df
+def _reshape_to_long_format(nc_path: Path, latitude: float, longitude: float) -> pd.DataFrame:
+    """
+    xarray nearest-gridpoint spatial join (per project memory:
+    `.sel(method='nearest')` on rounded lat/lon), then reshape the
+    (time, number, [lat/lon already collapsed]) cube into the long
+    (timestamp, ensemble_member, var...) format nwp_processor.py expects.
+    """
+    ds = xr.open_dataset(nc_path)
+    ds = ds.sel(latitude=latitude, longitude=longitude, method="nearest")
+
+    # Map CDS short names -> this project's column names. CDS netCDF
+    # short names for these variables are typically ssrd/tcc/t2m/u10/v10/sp;
+    # this mapping should be checked against the actual downloaded file's
+    # `ds.data_vars` if CDS has renamed anything.
+    var_map = {"ssrd": "ghi", "tcc": "cloud_cover", "t2m": "temp_c", "u10": "u", "v10": "v", "sp": "sp"}
+    missing = [k for k in var_map if k not in ds.data_vars]
+    if missing:
+        raise KeyError(
+            f"Expected ERA5 variables {missing} not found in downloaded file. "
+            f"Available: {list(ds.data_vars)}. Update var_map in _reshape_to_long_format()."
+        )
+
+    df = ds[list(var_map)].to_dataframe().reset_index()
+    df = df.rename(columns=var_map)
+    df = df.rename(columns={"time": "timestamp", "number": "ensemble_member"})
+
+    # ssrd is accumulated (J/m^2) over the 3h step in this product;
+    # de-accumulate to an instantaneous-equivalent W/m^2 rate.
+    df["ghi"] = np.clip(df["ghi"] / (3 * 3600.0), 0.0, None)
+
+    # Kelvin -> Celsius
+    df["temp_c"] = df["temp_c"] - 273.15
+
+    # tcc in ERA5 is a fraction [0,1]; keep as-is (0-1), matching the
+    # synthetic generator's convention.
+    df["cloud_cover"] = df["cloud_cover"].clip(0.0, 1.0)
+
+    df["wind_speed"] = np.sqrt(df["u"] ** 2 + df["v"] ** 2)
+
+    keep = ["timestamp", "ensemble_member", "ghi", "cloud_cover", "temp_c", "wind_speed"]
+    return df[keep].sort_values(["timestamp", "ensemble_member"]).reset_index(drop=True)
 
 
-def build_features(pv_df: pd.DataFrame, nwp_df: pd.DataFrame, freq_minutes: int = 15) -> pd.DataFrame:
-    df = merge_pv_nwp(pv_df, nwp_df)
-    df = add_clear_sky_index(df)
-    df = add_time_features(df, timestamp_col="timestamp")
-    df = add_volatility_features(df, freq_minutes=freq_minutes)
-    df = assign_regime(df)
-
-    # Rename NWP ensemble std columns to the SIGMA_FEATURES naming convention
-    df["sigma_nwp_ghi"] = df["nwp_ghi_std"]
-    df["sigma_nwp_cloud"] = df["nwp_cloud_cover_std"]
-    df["sigma_nwp_temp"] = df["nwp_temp_c_std"]
-    df["sigma_nwp_wind"] = df["nwp_wind_speed_std"]
-    # Placeholder until Phase 3 produces real expert-disagreement sigma;
-    # kept at 0 here so shapes/columns are stable end-to-end from Phase 1.
-    df["sigma_expert_placeholder"] = 0.0
-
-    df["cloud_cover"] = df["nwp_cloud_cover_mean"]
-    df["temp_c"] = df["nwp_temp_c_mean"]
-    df["wind_speed"] = df["nwp_wind_speed_mean"]
-    df["ghi"] = df["ghi_measured"]
-
-    logger.info(f"Feature engineering complete: {len(df)} rows, {df.shape[1]} columns. "
-                f"Regime distribution: {df['regime'].value_counts().to_dict()}")
-    return df
+def _resample_to_pv_grid(nwp_long: pd.DataFrame, pv_timestamps: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    ERA5 EDA is 3-hourly; the PV series is 30-min. Interpolate each
+    ensemble member's series independently onto the PV timestamp grid
+    (matches the project's documented hourly->30-min interpolation
+    approach, just with a 3h source cadence instead of 1h).
+    """
+    out = []
+    for member, g in nwp_long.groupby("ensemble_member"):
+        g = g.set_index("timestamp").sort_index()
+        g = g.reindex(g.index.union(pv_timestamps)).interpolate(method="time").reindex(pv_timestamps)
+        g["ensemble_member"] = member
+        out.append(g.reset_index(names="timestamp"))
+    return pd.concat(out, ignore_index=True)
 
 
 def main():
-    pv_df = load_parquet(PV_CLEAN_PATH)
-    nwp_df = load_parquet(NWP_CLEAN_PATH)
-    features_df = build_features(pv_df, nwp_df)
-    save_parquet(features_df, FEATURES_PATH)
-    logger.info(f"Saved engineered features -> {FEATURES_PATH}")
-    return FEATURES_PATH
+    pv_raw_path = RAW_PV_DIR / "pv_raw.parquet"
+    if not pv_raw_path.exists():
+        raise FileNotFoundError(
+            f"{pv_raw_path} not found. Run src/phase1/download_pv.py first "
+            f"so NWP timestamps and the site's lat/lon can be aligned to the PV series."
+        )
+    pv_df = load_parquet(pv_raw_path)
+    pv_timestamps = pd.DatetimeIndex(pd.to_datetime(pv_df["timestamp"]).unique()).sort_values()
+
+    latitude, longitude = _nearest_site_latlon()
+    nc_path = _fetch_era5_raw(START_DATE, END_DATE)
+    nwp_long = _reshape_to_long_format(nc_path, latitude, longitude)
+    nwp_resampled = _resample_to_pv_grid(nwp_long, pv_timestamps)
+
+    out_path = RAW_NWP_DIR / "nwp_ensemble.parquet"
+    save_parquet(nwp_resampled, out_path)
+    logger.info(f"Saved raw NWP ensemble data -> {out_path} ({len(nwp_resampled)} rows, "
+                f"{nwp_resampled['ensemble_member'].nunique()} members).")
+    return out_path
 
 
 if __name__ == "__main__":
