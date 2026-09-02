@@ -36,6 +36,21 @@ def merge_pv_nwp(pv_df: pd.DataFrame, nwp_df: pd.DataFrame) -> pd.DataFrame:
 
     merged = pd.merge(pv_df, nwp_df, on=COL_TIMESTAMP, how="inner", suffixes=("", "_nwp"))
     merged = merged.sort_values(COL_TIMESTAMP).reset_index(drop=True)
+
+    # Real uk_pv carries no irradiance/temperature -- only the synthetic
+    # generator populated ghi_measured/ambient_temp_c directly on the PV
+    # frame. When those columns are absent (real-data mode), fall back to
+    # the ERA5 ensemble-mean fields as the "observed weather" side of
+    # clear_sky_index. This is NOT a like-for-like substitute for a real
+    # pyranometer reading -- ERA5's own estimate is being used as both the
+    # "observed" and "forecast" input -- but it's the best available
+    # signal given uk_pv's schema, and strictly better than crashing on a
+    # missing column. Flag this clearly in any reviewer-facing write-up.
+    if "ghi_measured" not in merged.columns:
+        merged["ghi_measured"] = merged["nwp_ghi_mean"]
+    if "ambient_temp_c" not in merged.columns:
+        merged["ambient_temp_c"] = merged["nwp_temp_c_mean"]
+
     return merged
 
 
