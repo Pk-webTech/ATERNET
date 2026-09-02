@@ -11,5 +11,11 @@ PyYAML>=6.0
 matplotlib>=3.7
 torch>=2.1
 
+# Real-data acquisition (Phase 1)
+huggingface_hub>=0.24   # openclimatefix/uk_pv
+cdsapi>=0.7              # ECMWF ERA5 via Copernicus CDS
+xarray>=2024.1
+netCDF4>=1.6              # xarray's NetCDF backend for ERA5 downloads
+
 # Tests
 pytest>=7.4
