@@ -1,44 +1,73 @@
 """
-Phase 1 -- PV data acquisition.
+Phase 1 -- PV data acquisition (REAL DATA: openclimatefix/uk_pv).
 
-No live PV telemetry / API credentials are available in this environment,
-so this module generates a physically-grounded synthetic PV generation
-series (clear-sky model + stochastic cloud attenuation + sensor noise).
+Replaces the synthetic generator with the actual `openclimatefix/uk_pv`
+HuggingFace dataset: 396 UK PV sites, half-hourly generation readings +
+static site metadata (capacity, lat/lon, orientation).
 
-The function signature and output schema are written so that swapping
-this out for a real API / SCADA export later requires touching only
-this file -- everything downstream reads data/raw/pv/pv_raw.parquet.
+Output schema is deliberately kept close to the original synthetic
+version so nothing downstream except this file (and, for the two
+fields uk_pv doesn't provide, `feature_engineering.py`) has to change:
+
+    timestamp, pv_power_kw, solar_elevation_deg
+
+WHAT'S MISSING FROM uk_pv, AND WHERE IT NOW COMES FROM
+--------------------------------------------------------
+uk_pv is PV generation + static metadata ONLY -- no irradiance, no
+ambient temperature (this is called out explicitly in project memory).
+The synthetic version populated `ghi_measured` / `ambient_temp_c`
+because its PV model needed to invent them; real data has no such
+column to carry forward. `feature_engineering.py` has been updated to
+source the "observed weather" side of `clear_sky_index` / `ghi` /
+`temp_c` from the ERA5 merge (ssrd -> ghi, 2t -> temp_c) instead of
+from the PV frame. That is *not* a workaround -- it's the same join
+the project was always going to need, just made structurally required
+now rather than optional.
+
+`solar_elevation_deg` IS computed here, from pure geometry (site
+lat/lon + timestamp), so `clear_sky_index` in feature_engineering still
+works unchanged.
+
+SITE SELECTION
+---------------
+uk_pv covers 396 sites; this project's windowing/split logic is built
+around a single continuous series. `SITE_ID` below pins one site
+explicitly. If unset, `_select_site()` picks the site with the fewest
+missing readings over the requested date range (a reasonable default,
+not necessarily the "best" site for the paper -- override `SITE_ID`
+once you and Piyush have picked one for the final numbers).
+
+Multi-site training (pooling several/all 396 series) is a natural
+follow-on but changes what a "window" and a "split" mean, so it's out
+of scope for this swap.
 """
+
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from config.paths import RAW_PV_DIR
-from src.utils.site_metadata import DEFAULT_SITE
-from src.utils.seed import set_seed
+from config.paths import RAW_PV_DIR, RAW_METADATA_DIR
 from src.utils.logger import get_logger
-from src.utils.io import save_parquet
+from src.utils.io import save_parquet, save_json
 
 logger = get_logger(__name__)
 
-# Standard-test-condition irradiance (W/m^2) -- the reference at which a
-# PV module is rated at its nameplate power.
-G_STC_WM2 = 1000.0
 
+# ---------------------------------------------------------------------
+# Pure-geometry helpers. Kept here (not moved) because
+# feature_engineering.py imports `_clear_sky_ghi` from this module --
+# relocating it would be an unrelated breaking change to a file this
+# swap isn't supposed to touch.
+# ---------------------------------------------------------------------
 
 def _solar_elevation_deg(timestamps: pd.DatetimeIndex, latitude: float) -> np.ndarray:
-    """
-    Simplified solar elevation angle (degrees) -- enough fidelity to drive a
-    synthetic clear-sky irradiance curve. Not a substitute for a real solar
-    position library (e.g. pvlib) if this project moves to real deployment.
-    """
+    """Simplified solar elevation angle (degrees). Unchanged from the
+    synthetic-data version -- this is pure geometry, no data dependency."""
     doy = timestamps.dayofyear.values.astype(float)
     hour = (timestamps.hour + timestamps.minute / 60.0).values.astype(float)
 
-    # Solar declination (degrees)
     decl = 23.45 * np.sin(np.deg2rad(360.0 / 365.0 * (doy - 81.0)))
-
-    # Hour angle (degrees); solar noon assumed at local hour 12
     hour_angle = 15.0 * (hour - 12.0)
 
     lat_rad = np.deg2rad(latitude)
@@ -54,7 +83,8 @@ def _solar_elevation_deg(timestamps: pd.DatetimeIndex, latitude: float) -> np.nd
 
 
 def _clear_sky_ghi(elevation_deg: np.ndarray, solar_constant: float = 1361.0) -> np.ndarray:
-    """Simplified clear-sky GHI (W/m^2) as a function of solar elevation."""
+    """Simplified clear-sky GHI (W/m^2). Unchanged from the synthetic-data
+    version; still imported by feature_engineering.py."""
     elev_clipped = np.clip(elevation_deg, 0.0, 90.0)
     air_mass = 1.0 / np.clip(np.sin(np.deg2rad(elev_clipped + 0.001)), 1e-3, None)
     transmittance = 0.75 ** (air_mass ** 0.678)
@@ -62,91 +92,179 @@ def _clear_sky_ghi(elevation_deg: np.ndarray, solar_constant: float = 1361.0) ->
     ghi = np.where(elevation_deg > 0, ghi, 0.0)
     return np.clip(ghi, 0.0, None)
 
+HF_REPO_ID = "openclimatefix/uk_pv"
+HF_REPO_TYPE = "dataset"
 
-def generate_synthetic_pv(
-    start_date: str = "2023-01-01",
-    end_date: str = "2023-12-31",
-    freq_minutes: int = 15,
-    seed: int = 42,
-) -> pd.DataFrame:
+# Pin a specific uk_pv system id (a.k.a. ss_id) once you've chosen one for
+# the paper's final numbers. None -> auto-select (see module docstring).
+SITE_ID: Optional[int] = None
+
+# uk_pv's date coverage; narrow this if you want a shorter, faster pull.
+START_DATE = "2018-01-01"
+END_DATE = "2021-10-31"
+
+
+def _find_repo_files():
     """
-    Build a full-year synthetic PV generation series with:
-      - clear-sky baseline driven by solar geometry
-      - correlated cloud-attenuation episodes (regime-inducing)
-      - inverter/sensor noise
-      - occasional missing-data gaps (realistic telemetry behaviour)
+    uk_pv's exact filenames have changed across dataset revisions, so we
+    discover them rather than hardcoding paths that might drift.
     """
-    set_seed(seed)
+    from huggingface_hub import HfApi
 
-    timestamps = pd.date_range(start=start_date, end=end_date, freq=f"{freq_minutes}min")
-    n = len(timestamps)
+    api = HfApi()
+    files = api.list_repo_files(HF_REPO_ID, repo_type=HF_REPO_TYPE)
 
-    elevation = _solar_elevation_deg(timestamps, DEFAULT_SITE.latitude)
-    clear_sky_ghi = _clear_sky_ghi(elevation)
+    metadata_files = [f for f in files if "metadata" in f.lower() and f.endswith((".csv", ".parquet"))]
+    # Prefer the half-hourly ("30min") generation file over the 5-minute
+    # one -- this project's native frequency is 15 min in the synthetic
+    # version but uk_pv's finest granularity that's uniformly available
+    # across sites is 30 min; downstream `pv_processor.py` reindexes onto
+    # whatever regular grid is inferred, so 30-min input is fine.
+    gen_files = [f for f in files if f.endswith(".parquet") and "metadata" not in f.lower()]
+    half_hourly = [f for f in gen_files if "30" in f]
+    chosen_gen = half_hourly if half_hourly else gen_files
 
-    # Stochastic cloud attenuation process (AR(1) in [0,1], 1 = no cloud).
-    # Vectorized: an explicit Python loop over ~35k steps is needlessly slow.
-    shocks = np.random.normal(0, 0.03, n)
-    cloud_transmittance = np.ones(n)
-    rho = 0.985
-    for t in range(1, n):
-        cloud_transmittance[t] = np.clip(
-            rho * cloud_transmittance[t - 1] + (1 - rho) * 1.0 + shocks[t], 0.05, 1.0
+    if not metadata_files or not chosen_gen:
+        raise FileNotFoundError(
+            f"Could not locate expected files in {HF_REPO_ID}. "
+            f"Found {len(files)} repo files total; metadata candidates: {metadata_files}; "
+            f"generation candidates: {gen_files}. Inspect the repo manually at "
+            f"https://huggingface.co/datasets/{HF_REPO_ID} and set exact paths."
         )
-    # Inject a handful of multi-hour deep-cloud episodes for regime diversity
-    n_episodes = max(1, n // (24 * 60 // freq_minutes) // 5)
-    for _ in range(n_episodes):
-        center = np.random.randint(0, n)
-        width = np.random.randint(8, 48)  # 2h - 12h depending on freq
-        lo, hi = max(0, center - width), min(n, center + width)
-        cloud_transmittance[lo:hi] *= np.random.uniform(0.2, 0.6)
+    return metadata_files[0], chosen_gen[0]
 
-    ghi_actual = clear_sky_ghi * cloud_transmittance
 
-    # PV power from irradiance: PVWatts-style DC model.
-    #   P = P_nameplate * (GHI / G_STC) * temp_derate * system_derate
-    # G_STC = 1000 W/m^2 is the standard-test-condition irradiance at which
-    # a panel produces its nameplate rating, so clear-sky noon maps to ~85%
-    # of nameplate rather than to a few percent of it. The earlier
-    # `ghi * 0.18 * capacity/1000` form conflated module efficiency (an
-    # area-to-power conversion) with the nameplate rating itself, which
-    # capped pv_norm at ~0.17 and left the whole [0,1] target range -- and
-    # every downstream constant defined against it (the overcast expert's
-    # 0.40 cap, the regime volatility thresholds) -- effectively dead.
-    ambient_temp = 25 + 8 * np.sin(np.deg2rad(elevation)) + np.random.normal(0, 1.0, n)
-    cell_temp = ambient_temp + ghi_actual * 0.025          # NOCT-style cell heating
-    temp_derate = 1 - 0.004 * np.clip(cell_temp - 25, 0, None)
-    system_derate = 0.85                                    # soiling, wiring, inverter
+def _download(path_in_repo: str) -> str:
+    from huggingface_hub import hf_hub_download
 
-    pv_power_kw = (
-        DEFAULT_SITE.capacity_kw * (ghi_actual / G_STC_WM2) * temp_derate * system_derate
-    )
-    pv_power_kw += np.random.normal(0, DEFAULT_SITE.capacity_kw * 0.002, n)  # sensor noise
-    pv_power_kw = np.clip(pv_power_kw, 0, DEFAULT_SITE.capacity_kw)
-    pv_power_kw = np.where(elevation > 0, pv_power_kw, 0.0)
+    local_path = hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=path_in_repo)
+    logger.info(f"Fetched {HF_REPO_ID}/{path_in_repo} -> {local_path}")
+    return local_path
 
-    df = pd.DataFrame({
-        "timestamp": timestamps,
-        "pv_power_kw": pv_power_kw,
-        "ghi_measured": ghi_actual,
-        "ambient_temp_c": ambient_temp,
-        "solar_elevation_deg": elevation,
-    })
 
-    # Simulate realistic missing-data gaps (~0.3% of rows, in short bursts)
-    n_gaps = max(1, n // 3000)
-    for _ in range(n_gaps):
-        start = np.random.randint(0, n - 10)
-        length = np.random.randint(1, 6)
-        df.loc[start:start + length, ["pv_power_kw"]] = np.nan
+def _load_metadata(metadata_path: str) -> pd.DataFrame:
+    if metadata_path.endswith(".csv"):
+        meta = pd.read_csv(metadata_path)
+    else:
+        meta = pd.read_parquet(metadata_path)
 
-    logger.info(f"Synthesized PV series: {n} rows from {start_date} to {end_date} "
-                f"({df['pv_power_kw'].isna().sum()} missing points injected).")
+    # Column names have varied across uk_pv revisions (ss_id vs system_id,
+    # latitude_rounded vs latitude, kwp vs capacity_kw). Normalize the
+    # handful this module actually needs.
+    rename_map = {}
+    for c in meta.columns:
+        cl = c.lower()
+        if cl in ("ss_id", "system_id", "id"):
+            rename_map[c] = "site_id"
+        elif "lat" in cl:
+            rename_map[c] = "latitude"
+        elif "lon" in cl or "lng" in cl:
+            rename_map[c] = "longitude"
+        elif "kwp" in cl or "capacity" in cl:
+            rename_map[c] = "capacity_kw"
+    meta = meta.rename(columns=rename_map)
+
+    required = {"site_id", "latitude", "longitude", "capacity_kw"}
+    missing = required - set(meta.columns)
+    if missing:
+        raise KeyError(
+            f"uk_pv metadata is missing expected column(s) {missing} after normalization; "
+            f"raw columns were {list(pd.read_parquet(metadata_path).columns) if metadata_path.endswith('.parquet') else list(pd.read_csv(metadata_path, nrows=0).columns)}. "
+            f"Update the rename_map in _load_metadata()."
+        )
+    return meta.dropna(subset=["latitude", "longitude", "capacity_kw"])
+
+
+def _load_generation(gen_path: str) -> pd.DataFrame:
+    df = pd.read_parquet(gen_path)
+    rename_map = {}
+    for c in df.columns:
+        cl = c.lower()
+        if cl in ("ss_id", "system_id", "id"):
+            rename_map[c] = "site_id"
+        elif cl in ("timestamp", "datetime", "datetime_gmt"):
+            rename_map[c] = "timestamp"
+        elif "power" in cl or "generation" in cl:
+            rename_map[c] = "pv_power_kw"
+    df = df.rename(columns=rename_map)
+
+    required = {"site_id", "timestamp", "pv_power_kw"}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(
+            f"uk_pv generation file is missing expected column(s) {missing} after "
+            f"normalization; raw columns were {list(pd.read_parquet(gen_path).columns)}. "
+            f"Update the rename_map in _load_generation()."
+        )
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+def _select_site(gen_df: pd.DataFrame, meta_df: pd.DataFrame, site_id: Optional[int]) -> int:
+    if site_id is not None:
+        if site_id not in set(meta_df["site_id"]):
+            raise ValueError(f"SITE_ID={site_id} not present in uk_pv metadata.")
+        return site_id
+
+    in_range = gen_df[(gen_df["timestamp"] >= START_DATE) & (gen_df["timestamp"] <= END_DATE)]
+    completeness = in_range.groupby("site_id")["pv_power_kw"].apply(lambda s: s.notna().mean())
+    completeness = completeness[completeness.index.isin(meta_df["site_id"])]
+    if completeness.empty:
+        raise RuntimeError("No uk_pv site has any generation data in START_DATE..END_DATE.")
+    best = completeness.idxmax()
+    logger.info(f"Auto-selected site_id={best} (data completeness {completeness[best]:.1%} "
+                f"over {START_DATE}..{END_DATE}). Set SITE_ID to pin this explicitly.")
+    return int(best)
+
+
+def build_real_pv_series() -> pd.DataFrame:
+    metadata_path_in_repo, gen_path_in_repo = _find_repo_files()
+    metadata_local = _download(metadata_path_in_repo)
+    gen_local = _download(gen_path_in_repo)
+
+    meta_df = _load_metadata(metadata_local)
+    gen_df = _load_generation(gen_local)
+
+    site_id = _select_site(gen_df, meta_df, SITE_ID)
+    site_meta = meta_df.loc[meta_df["site_id"] == site_id].iloc[0]
+
+    df = gen_df.loc[
+        (gen_df["site_id"] == site_id)
+        & (gen_df["timestamp"] >= START_DATE)
+        & (gen_df["timestamp"] <= END_DATE),
+        ["timestamp", "pv_power_kw"],
+    ].sort_values("timestamp").reset_index(drop=True)
+
+    if df.empty:
+        raise RuntimeError(f"Selected site_id={site_id} has no rows in the requested date range.")
+
+    elevation = _solar_elevation_deg(pd.DatetimeIndex(df["timestamp"]), float(site_meta["latitude"]))
+    df["solar_elevation_deg"] = elevation
+
+    # Persist the resolved real site metadata so pv_processor's capacity
+    # normalization (and anything else keyed on DEFAULT_SITE) uses the
+    # ACTUAL site's nameplate rather than the synthetic 1000 kW default.
+    resolved = {
+        "site_id": int(site_id),
+        "latitude": float(site_meta["latitude"]),
+        "longitude": float(site_meta["longitude"]),
+        "capacity_kw": float(site_meta["capacity_kw"]),
+        "source": HF_REPO_ID,
+        "date_range": [START_DATE, END_DATE],
+    }
+    save_json(resolved, RAW_METADATA_DIR / "resolved_site_metadata.json")
+    logger.info(f"Resolved real site metadata -> {RAW_METADATA_DIR / 'resolved_site_metadata.json'}: "
+                f"{resolved}")
+
+    n_missing = int(df["pv_power_kw"].isna().sum())
+    logger.info(f"Loaded real uk_pv series for site_id={site_id}: {len(df)} rows "
+                f"({START_DATE}..{END_DATE}), {n_missing} missing readings "
+                f"(pv_processor.py handles gap-filling).")
     return df
 
 
 def main():
-    df = generate_synthetic_pv()
+    df = build_real_pv_series()
     out_path = RAW_PV_DIR / "pv_raw.parquet"
     save_parquet(df, out_path)
     logger.info(f"Saved raw PV data -> {out_path} ({len(df)} rows).")
