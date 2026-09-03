@@ -39,6 +39,7 @@ range before committing to a full 2010-2026 pull.
 """
 
 from pathlib import Path
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -66,8 +67,8 @@ CDS_VARIABLES = [
 CDS_PRODUCT_TYPE = "ensemble_members"
 N_EDA_MEMBERS = 10
 
-START_DATE = "2018-01-01"
-END_DATE = "2021-10-31"
+START_DATE = "2010-11-20"
+END_DATE = "2010-11-25"
 
 
 def _fetch_era5_raw(start_date: str, end_date: str, area=GB_AREA) -> Path:
@@ -82,10 +83,10 @@ def _fetch_era5_raw(start_date: str, end_date: str, area=GB_AREA) -> Path:
     """
     import cdsapi
 
-    out_path = CACHE_DIR / f"era5_eda_{start_date}_{end_date}.nc"
-    if out_path.exists():
-        logger.info(f"ERA5 EDA cache hit: {out_path}")
-        return out_path
+    out_dir = CACHE_DIR / f"era5_eda_{start_date}_{end_date}"
+    if out_dir.exists() and list(out_dir.glob("*.nc")):
+        logger.info(f"ERA5 EDA cache hit: {out_dir}")
+        return out_dir
 
     dates = pd.date_range(start_date, end_date, freq="D")
     years = sorted(dates.year.unique().astype(str).tolist())
@@ -101,14 +102,27 @@ def _fetch_era5_raw(start_date: str, end_date: str, area=GB_AREA) -> Path:
         "day": days,
         "time": [f"{h:02d}:00" for h in range(0, 24, 3)],  # EDA is 3-hourly
         "area": area,
-        "format": "netcdf",
+        "data_format": "netcdf",
+        "download_format": "unarchived",
     }
+    
+    zip_path = CACHE_DIR / f"temp_{start_date}_{end_date}.zip"
     logger.info(f"Submitting CDS request for {start_date}..{end_date} "
                 f"({len(years)} year(s), product_type={CDS_PRODUCT_TYPE}). "
                 f"This can take a long time to queue on CDS's end.")
-    client.retrieve("reanalysis-era5-single-levels", request, str(out_path))
-    logger.info(f"Saved raw ERA5 EDA NetCDF -> {out_path}")
-    return out_path
+    client.retrieve("reanalysis-era5-single-levels", request, str(zip_path))
+    
+    out_dir.mkdir(exist_ok=True)
+    if zipfile.is_zipfile(zip_path):
+        logger.info("CDS API returned a ZIP archive. Extracting all files...")
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            z.extractall(path=out_dir)
+        zip_path.unlink()
+    else:
+        logger.info("CDS API returned a single NetCDF file.")
+        zip_path.rename(out_dir / "data.nc")
+        
+    return out_dir
 
 
 def _nearest_site_latlon() -> tuple:
@@ -128,15 +142,22 @@ def _nearest_site_latlon() -> tuple:
     return meta["latitude"], meta["longitude"]
 
 
-def _reshape_to_long_format(nc_path: Path, latitude: float, longitude: float) -> pd.DataFrame:
+def _reshape_to_long_format(nc_dir: Path, latitude: float, longitude: float) -> pd.DataFrame:
     """
     xarray nearest-gridpoint spatial join (per project memory:
     `.sel(method='nearest')` on rounded lat/lon), then reshape the
     (time, number, [lat/lon already collapsed]) cube into the long
     (timestamp, ensemble_member, var...) format nwp_processor.py expects.
     """
-    ds = xr.open_dataset(nc_path)
-    ds = ds.sel(latitude=latitude, longitude=longitude, method="nearest")
+    # CDS returns multiple NetCDF files in a ZIP when mixing instantaneous 
+    # and accumulated variables. Load them all and merge into one dataset.
+    datasets = []
+    for p in nc_dir.glob("*.nc"):
+        ds = xr.open_dataset(p)
+        ds = ds.sel(latitude=latitude, longitude=longitude, method="nearest")
+        datasets.append(ds)
+        
+    ds = xr.merge(datasets, compat='override')
 
     # Map CDS short names -> this project's column names. CDS netCDF
     # short names for these variables are typically ssrd/tcc/t2m/u10/v10/sp;
@@ -152,7 +173,13 @@ def _reshape_to_long_format(nc_path: Path, latitude: float, longitude: float) ->
 
     df = ds[list(var_map)].to_dataframe().reset_index()
     df = df.rename(columns=var_map)
-    df = df.rename(columns={"time": "timestamp", "number": "ensemble_member"})
+    
+    # Handle CDS time dimension renaming (time vs valid_time)
+    time_col = "time" if "time" in df.columns else "valid_time"
+    df = df.rename(columns={time_col: "timestamp", "number": "ensemble_member"})
+    
+    # Convert timestamp to a proper Datetime object for interpolation
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # ssrd is accumulated (J/m^2) over the 3h step in this product;
     # de-accumulate to an instantaneous-equivalent W/m^2 rate.
@@ -179,6 +206,12 @@ def _resample_to_pv_grid(nwp_long: pd.DataFrame, pv_timestamps: pd.DatetimeIndex
     approach, just with a 3h source cadence instead of 1h).
     """
     out = []
+    # Ensure timezone awareness matches between DataFrames if necessary
+    if nwp_long["timestamp"].dt.tz is None and pv_timestamps.tz is not None:
+        nwp_long["timestamp"] = nwp_long["timestamp"].dt.tz_localize(pv_timestamps.tz)
+    elif nwp_long["timestamp"].dt.tz is not None and pv_timestamps.tz is None:
+        nwp_long["timestamp"] = nwp_long["timestamp"].dt.tz_localize(None)
+
     for member, g in nwp_long.groupby("ensemble_member"):
         g = g.set_index("timestamp").sort_index()
         g = g.reindex(g.index.union(pv_timestamps)).interpolate(method="time").reindex(pv_timestamps)
@@ -198,8 +231,8 @@ def main():
     pv_timestamps = pd.DatetimeIndex(pd.to_datetime(pv_df["timestamp"]).unique()).sort_values()
 
     latitude, longitude = _nearest_site_latlon()
-    nc_path = _fetch_era5_raw(START_DATE, END_DATE)
-    nwp_long = _reshape_to_long_format(nc_path, latitude, longitude)
+    nc_dir = _fetch_era5_raw(START_DATE, END_DATE)
+    nwp_long = _reshape_to_long_format(nc_dir, latitude, longitude)
     nwp_resampled = _resample_to_pv_grid(nwp_long, pv_timestamps)
 
     out_path = RAW_NWP_DIR / "nwp_ensemble.parquet"

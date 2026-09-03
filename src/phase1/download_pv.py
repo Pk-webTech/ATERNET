@@ -100,8 +100,9 @@ HF_REPO_TYPE = "dataset"
 SITE_ID: Optional[int] = None
 
 # uk_pv's date coverage; narrow this if you want a shorter, faster pull.
-START_DATE = "2018-01-01"
-END_DATE = "2021-10-31"
+START_DATE = "2010-11-20"
+
+END_DATE = "2010-11-25"
 
 
 def _find_repo_files():
@@ -224,6 +225,9 @@ def build_real_pv_series() -> pd.DataFrame:
 
     meta_df = _load_metadata(metadata_local)
     gen_df = _load_generation(gen_local)
+
+    # Output the exact date range available in the generation dataframe
+    print(f"Available data range in dataset: {gen_df['timestamp'].min()} to {gen_df['timestamp'].max()}")
 
     site_id = _select_site(gen_df, meta_df, SITE_ID)
     site_meta = meta_df.loc[meta_df["site_id"] == site_id].iloc[0]
