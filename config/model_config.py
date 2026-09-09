@@ -10,14 +10,21 @@ from typing import List
 
 @dataclass
 class DataConfig:
-    # Native sampling frequency of the PV / NWP series
-    freq_minutes: int = 15
+    # Native sampling frequency of the PV / NWP series.
+    # NOTE: real data mode uses openclimatefix/uk_pv, whose finest
+    # uniformly-available cadence is 30 min (not the 15 min the old
+    # synthetic generator produced). This MUST match the actual spacing
+    # of data/interim/pv_clean.parquet, or create_windows' contiguity
+    # check will reject every window (diff() will never equal the
+    # configured expected spacing) -- exactly the "0 windows generated"
+    # failure this value previously caused.
+    freq_minutes: int = 30
 
     # Lookback window length (in time steps) fed to the temporal encoder
-    window_size: int = 48          # 48 * 15min = 12 hours of history
+    window_size: int = 48          # 48 * 30min = 24 hours of history
 
     # Forecast horizon (in time steps)
-    horizon: int = 16              # 16 * 15min = 4 hours ahead
+    horizon: int = 16              # 16 * 30min = 8 hours ahead
 
     # Stride between consecutive sliding windows
     stride: int = 4

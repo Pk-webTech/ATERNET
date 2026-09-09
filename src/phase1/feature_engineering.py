@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from config.paths import PV_CLEAN_PATH, NWP_CLEAN_PATH, FEATURES_PATH
+from config.model_config import DATA_CONFIG
 from src.utils.constants import COL_TIMESTAMP, REGIME_LIST, REGIME_TO_ID
 from src.utils.helpers import add_time_features
 from src.utils.logger import get_logger
@@ -65,7 +66,7 @@ def add_clear_sky_index(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def add_volatility_features(df: pd.DataFrame, freq_minutes: int = 15) -> pd.DataFrame:
+def add_volatility_features(df: pd.DataFrame, freq_minutes: int = DATA_CONFIG.freq_minutes) -> pd.DataFrame:
     df = df.copy()
     steps_per_hour = max(1, 60 // freq_minutes)
 
@@ -120,7 +121,8 @@ def assign_regime(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_features(pv_df: pd.DataFrame, nwp_df: pd.DataFrame, freq_minutes: int = 15) -> pd.DataFrame:
+def build_features(pv_df: pd.DataFrame, nwp_df: pd.DataFrame,
+                    freq_minutes: int = DATA_CONFIG.freq_minutes) -> pd.DataFrame:
     df = merge_pv_nwp(pv_df, nwp_df)
     df = add_clear_sky_index(df)
     df = add_time_features(df, timestamp_col="timestamp")

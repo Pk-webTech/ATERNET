@@ -32,20 +32,17 @@ SITE SELECTION
 ---------------
 uk_pv covers 396 sites; this project's windowing/split logic is built
 around a single continuous series. `SITE_ID` below pins one site
-explicitly. If unset, `_select_site()` picks the site with the fewest
-missing readings over the requested date range (a reasonable default,
-not necessarily the "best" site for the paper -- override `SITE_ID`
-once you and Piyush have picked one for the final numbers).
-
-Multi-site training (pooling several/all 396 series) is a natural
-follow-on but changes what a "window" and a "split" mean, so it's out
-of scope for this swap.
+explicitly. If unset, it automatically picks the site with the fewest
+missing readings in the first month to save memory, then extracts only
+that site from the remaining months.
 """
 
 from typing import Optional
+import gc
 
 import numpy as np
 import pandas as pd
+from huggingface_hub.utils import EntryNotFoundError
 
 from config.paths import RAW_PV_DIR, RAW_METADATA_DIR
 from src.utils.logger import get_logger
@@ -55,15 +52,10 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------
-# Pure-geometry helpers. Kept here (not moved) because
-# feature_engineering.py imports `_clear_sky_ghi` from this module --
-# relocating it would be an unrelated breaking change to a file this
-# swap isn't supposed to touch.
+# Pure-geometry helpers.
 # ---------------------------------------------------------------------
 
 def _solar_elevation_deg(timestamps: pd.DatetimeIndex, latitude: float) -> np.ndarray:
-    """Simplified solar elevation angle (degrees). Unchanged from the
-    synthetic-data version -- this is pure geometry, no data dependency."""
     doy = timestamps.dayofyear.values.astype(float)
     hour = (timestamps.hour + timestamps.minute / 60.0).values.astype(float)
 
@@ -83,8 +75,6 @@ def _solar_elevation_deg(timestamps: pd.DatetimeIndex, latitude: float) -> np.nd
 
 
 def _clear_sky_ghi(elevation_deg: np.ndarray, solar_constant: float = 1361.0) -> np.ndarray:
-    """Simplified clear-sky GHI (W/m^2). Unchanged from the synthetic-data
-    version; still imported by feature_engineering.py."""
     elev_clipped = np.clip(elevation_deg, 0.0, 90.0)
     air_mass = 1.0 / np.clip(np.sin(np.deg2rad(elev_clipped + 0.001)), 1e-3, None)
     transmittance = 0.75 ** (air_mass ** 0.678)
@@ -95,49 +85,25 @@ def _clear_sky_ghi(elevation_deg: np.ndarray, solar_constant: float = 1361.0) ->
 HF_REPO_ID = "openclimatefix/uk_pv"
 HF_REPO_TYPE = "dataset"
 
-# Pin a specific uk_pv system id (a.k.a. ss_id) once you've chosen one for
-# the paper's final numbers. None -> auto-select (see module docstring).
+# Pin a specific uk_pv system id (a.k.a. ss_id). None -> auto-select.
 SITE_ID: Optional[int] = None
 
-# uk_pv's date coverage; narrow this if you want a shorter, faster pull.
-START_DATE = "2010-11-20"
-
-END_DATE = "2010-11-25"
+START_DATE = "2019-01-01"
+END_DATE = "2019-12-31"
 
 
-def _find_repo_files():
-    """
-    uk_pv's exact filenames have changed across dataset revisions, so we
-    discover them rather than hardcoding paths that might drift.
-    """
+def _find_metadata_file():
     from huggingface_hub import HfApi
-
     api = HfApi()
     files = api.list_repo_files(HF_REPO_ID, repo_type=HF_REPO_TYPE)
-
     metadata_files = [f for f in files if "metadata" in f.lower() and f.endswith((".csv", ".parquet"))]
-    # Prefer the half-hourly ("30min") generation file over the 5-minute
-    # one -- this project's native frequency is 15 min in the synthetic
-    # version but uk_pv's finest granularity that's uniformly available
-    # across sites is 30 min; downstream `pv_processor.py` reindexes onto
-    # whatever regular grid is inferred, so 30-min input is fine.
-    gen_files = [f for f in files if f.endswith(".parquet") and "metadata" not in f.lower()]
-    half_hourly = [f for f in gen_files if "30" in f]
-    chosen_gen = half_hourly if half_hourly else gen_files
-
-    if not metadata_files or not chosen_gen:
-        raise FileNotFoundError(
-            f"Could not locate expected files in {HF_REPO_ID}. "
-            f"Found {len(files)} repo files total; metadata candidates: {metadata_files}; "
-            f"generation candidates: {gen_files}. Inspect the repo manually at "
-            f"https://huggingface.co/datasets/{HF_REPO_ID} and set exact paths."
-        )
-    return metadata_files[0], chosen_gen[0]
+    if not metadata_files:
+        raise FileNotFoundError(f"Could not locate metadata file in {HF_REPO_ID}.")
+    return metadata_files[0]
 
 
 def _download(path_in_repo: str) -> str:
     from huggingface_hub import hf_hub_download
-
     local_path = hf_hub_download(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, filename=path_in_repo)
     logger.info(f"Fetched {HF_REPO_ID}/{path_in_repo} -> {local_path}")
     return local_path
@@ -149,9 +115,6 @@ def _load_metadata(metadata_path: str) -> pd.DataFrame:
     else:
         meta = pd.read_parquet(metadata_path)
 
-    # Column names have varied across uk_pv revisions (ss_id vs system_id,
-    # latitude_rounded vs latitude, kwp vs capacity_kw). Normalize the
-    # handful this module actually needs.
     rename_map = {}
     for c in meta.columns:
         cl = c.lower()
@@ -168,11 +131,7 @@ def _load_metadata(metadata_path: str) -> pd.DataFrame:
     required = {"site_id", "latitude", "longitude", "capacity_kw"}
     missing = required - set(meta.columns)
     if missing:
-        raise KeyError(
-            f"uk_pv metadata is missing expected column(s) {missing} after normalization; "
-            f"raw columns were {list(pd.read_parquet(metadata_path).columns) if metadata_path.endswith('.parquet') else list(pd.read_csv(metadata_path, nrows=0).columns)}. "
-            f"Update the rename_map in _load_metadata()."
-        )
+        raise KeyError(f"uk_pv metadata missing {missing}.")
     return meta.dropna(subset=["latitude", "longitude", "capacity_kw"])
 
 
@@ -188,68 +147,75 @@ def _load_generation(gen_path: str) -> pd.DataFrame:
         elif "power" in cl or "generation" in cl:
             rename_map[c] = "pv_power_kw"
     df = df.rename(columns=rename_map)
-
-    required = {"site_id", "timestamp", "pv_power_kw"}
-    missing = required - set(df.columns)
-    if missing:
-        raise KeyError(
-            f"uk_pv generation file is missing expected column(s) {missing} after "
-            f"normalization; raw columns were {list(pd.read_parquet(gen_path).columns)}. "
-            f"Update the rename_map in _load_generation()."
-        )
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     return df
 
 
-def _select_site(gen_df: pd.DataFrame, meta_df: pd.DataFrame, site_id: Optional[int]) -> int:
-    if site_id is not None:
-        if site_id not in set(meta_df["site_id"]):
-            raise ValueError(f"SITE_ID={site_id} not present in uk_pv metadata.")
-        return site_id
-
-    in_range = gen_df[(gen_df["timestamp"] >= START_DATE) & (gen_df["timestamp"] <= END_DATE)]
-    completeness = in_range.groupby("site_id")["pv_power_kw"].apply(lambda s: s.notna().mean())
-    completeness = completeness[completeness.index.isin(meta_df["site_id"])]
-    if completeness.empty:
-        raise RuntimeError("No uk_pv site has any generation data in START_DATE..END_DATE.")
-    best = completeness.idxmax()
-    logger.info(f"Auto-selected site_id={best} (data completeness {completeness[best]:.1%} "
-                f"over {START_DATE}..{END_DATE}). Set SITE_ID to pin this explicitly.")
-    return int(best)
-
-
 def build_real_pv_series() -> pd.DataFrame:
-    metadata_path_in_repo, gen_path_in_repo = _find_repo_files()
+    metadata_path_in_repo = _find_metadata_file()
     metadata_local = _download(metadata_path_in_repo)
-    gen_local = _download(gen_path_in_repo)
-
     meta_df = _load_metadata(metadata_local)
-    gen_df = _load_generation(gen_local)
 
-    # Output the exact date range available in the generation dataframe
-    print(f"Available data range in dataset: {gen_df['timestamp'].min()} to {gen_df['timestamp'].max()}")
+    start_dt = pd.to_datetime(START_DATE)
+    end_dt = pd.to_datetime(END_DATE)
+    months_in_range = pd.date_range(start=start_dt.replace(day=1), end=end_dt, freq='MS')
 
-    site_id = _select_site(gen_df, meta_df, SITE_ID)
-    site_meta = meta_df.loc[meta_df["site_id"] == site_id].iloc[0]
+    target_site_id = SITE_ID
+    if target_site_id is None:
+        logger.info("SITE_ID is None. Finding the best site using the first month of data to save memory...")
+        first_month_dt = months_in_range[0]
+        first_file = f"30_minutely/year={first_month_dt.year}/month={first_month_dt.month:02d}/data.parquet"
+        local_path = _download(first_file)
+        first_df = _load_generation(local_path)
+        
+        # Determine completeness just on the first month
+        completeness = first_df.groupby("site_id")["pv_power_kw"].apply(lambda s: s.notna().mean())
+        completeness = completeness[completeness.index.isin(meta_df["site_id"])]
+        target_site_id = int(completeness.idxmax())
+        logger.info(f"Auto-selected site_id={target_site_id} (first month completeness {completeness[target_site_id]:.1%}).")
+        
+        # Free memory immediately
+        del first_df
+        gc.collect()
 
-    df = gen_df.loc[
-        (gen_df["site_id"] == site_id)
-        & (gen_df["timestamp"] >= START_DATE)
-        & (gen_df["timestamp"] <= END_DATE),
-        ["timestamp", "pv_power_kw"],
-    ].sort_values("timestamp").reset_index(drop=True)
+    downloaded_dfs = []
+    for dt in months_in_range:
+        year = dt.year
+        month = dt.month
+        file_path = f"30_minutely/year={year}/month={month:02d}/data.parquet"
+        
+        try:
+            local_path = _download(file_path)
+            df_part = _load_generation(local_path)
+            
+            # MEMORY OPTIMIZATION: Filter for the single target site immediately
+            df_part = df_part[df_part["site_id"] == target_site_id]
+            # Filter exact bounds
+            df_part = df_part[(df_part["timestamp"] >= START_DATE) & (df_part["timestamp"] <= END_DATE)]
+            
+            downloaded_dfs.append(df_part)
+        except EntryNotFoundError:
+            logger.warning(f"Partition not found on HuggingFace: {file_path}. Skipping.")
+        except Exception as e:
+            logger.warning(f"Error fetching {file_path}: {e}")
+
+    if not downloaded_dfs:
+        raise RuntimeError(f"No uk_pv generation partitions found between {START_DATE} and {END_DATE}.")
+
+    df = pd.concat(downloaded_dfs, ignore_index=True)
+    df = df[["timestamp", "pv_power_kw"]].sort_values("timestamp").reset_index(drop=True)
+
+    print(f"Available data range for site {target_site_id}: {df['timestamp'].min()} to {df['timestamp'].max()}")
 
     if df.empty:
-        raise RuntimeError(f"Selected site_id={site_id} has no rows in the requested date range.")
+        raise RuntimeError(f"Selected site_id={target_site_id} has no rows in the requested date range.")
 
+    site_meta = meta_df.loc[meta_df["site_id"] == target_site_id].iloc[0]
     elevation = _solar_elevation_deg(pd.DatetimeIndex(df["timestamp"]), float(site_meta["latitude"]))
     df["solar_elevation_deg"] = elevation
 
-    # Persist the resolved real site metadata so pv_processor's capacity
-    # normalization (and anything else keyed on DEFAULT_SITE) uses the
-    # ACTUAL site's nameplate rather than the synthetic 1000 kW default.
     resolved = {
-        "site_id": int(site_id),
+        "site_id": int(target_site_id),
         "latitude": float(site_meta["latitude"]),
         "longitude": float(site_meta["longitude"]),
         "capacity_kw": float(site_meta["capacity_kw"]),
@@ -257,13 +223,11 @@ def build_real_pv_series() -> pd.DataFrame:
         "date_range": [START_DATE, END_DATE],
     }
     save_json(resolved, RAW_METADATA_DIR / "resolved_site_metadata.json")
-    logger.info(f"Resolved real site metadata -> {RAW_METADATA_DIR / 'resolved_site_metadata.json'}: "
-                f"{resolved}")
+    logger.info(f"Resolved real site metadata -> {RAW_METADATA_DIR / 'resolved_site_metadata.json'}")
 
     n_missing = int(df["pv_power_kw"].isna().sum())
-    logger.info(f"Loaded real uk_pv series for site_id={site_id}: {len(df)} rows "
-                f"({START_DATE}..{END_DATE}), {n_missing} missing readings "
-                f"(pv_processor.py handles gap-filling).")
+    logger.info(f"Loaded real uk_pv series for site_id={target_site_id}: {len(df)} rows "
+                f"({START_DATE}..{END_DATE}), {n_missing} missing readings.")
     return df
 
 

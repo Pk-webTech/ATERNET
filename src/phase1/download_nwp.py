@@ -67,8 +67,8 @@ CDS_VARIABLES = [
 CDS_PRODUCT_TYPE = "ensemble_members"
 N_EDA_MEMBERS = 10
 
-START_DATE = "2010-11-20"
-END_DATE = "2010-11-25"
+START_DATE = "2019-01-01"
+END_DATE = "2019-12-31"
 
 
 def _fetch_era5_raw(start_date: str, end_date: str, area=GB_AREA) -> Path:
