@@ -19,3 +19,5 @@ netCDF4>=1.6              # xarray's NetCDF backend for ERA5 downloads
 
 # Tests
 pytest>=7.4
+streamlit
+plotly
