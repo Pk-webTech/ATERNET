@@ -170,7 +170,7 @@ with st.sidebar:
     st.caption("Adaptive Temporal Expert Routing Network\nfor Probabilistic Solar Power Forecasting")
     st.markdown("---")
     page = st.radio("", [
-        "Dashboard", "Forecast Explorer", "Routing & Experts",
+        "Dashboard", "Live Forecast", "Forecast Explorer", "Routing & Experts",
         "Uncertainty", "Guarantee Demo", "Baselines & Ablations", "Training",
     ], label_visibility="collapsed")
     st.markdown("---")
@@ -238,6 +238,101 @@ if page == "Dashboard":
                     "1. P10 \u2264 P50 \u2264 P90 always (softplus width)\n"
                     "2. Interval width non-decreasing in \u03c3_total\n"
                     "3. Routing softens under higher uncertainty")
+
+
+# ------------------------------------------------------------------ #
+# LIVE FORECAST
+# ------------------------------------------------------------------ #
+elif page == "Live Forecast":
+    import pandas as pd
+    from config.paths import PREDICTIONS_DIR
+
+    section_header("Live forecast",
+                   "Measured generation from Sheffield Solar PV_Live + Open-Meteo multi-model "
+                   "weather forecasts, fetched now. No panel or API key required.")
+
+    @st.cache_resource
+    def load_forecaster():
+        from src.inference.forecaster import Forecaster
+        return Forecaster()
+
+    try:
+        forecaster = load_forecaster()
+    except RuntimeError as e:
+        st.error(str(e))
+        st.stop()
+
+    st.markdown(f"**Region:** {forecaster.region.name} (PV_Live region {forecaster.region.region_id})")
+    if st.button("Fetch latest data and forecast", type="primary"):
+        with st.spinner("Downloading PV_Live readings and Open-Meteo forecasts..."):
+            try:
+                st.session_state["live"] = forecaster.forecast_live(return_history=True)
+            except Exception as e:  # network/API failures are expected in the wild
+                st.error(f"Live forecast failed: {e}")
+
+    if "live" in st.session_state:
+        fc, pv_hist = st.session_state["live"]
+        issue = fc["issue_time"].iloc[0]
+        recent = pv_hist[pv_hist["timestamp"] > issue - pd.Timedelta(hours=24)]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Issued (UTC)", f"{issue:%d %b %H:%M}")
+        c2.metric("Capacity", f"{fc['capacity_mw'].iloc[0]:.0f} MWp")
+        c3.metric("Peak P50 next 8h", f"{fc['p50_mw'].max():.0f} MW")
+        c4.metric("Regime at issue", fc["regime_at_issue"].iloc[0])
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=pd.concat([fc["target_time"], fc["target_time"][::-1]]),
+            y=pd.concat([fc["p90_mw"], fc["p10_mw"][::-1]]),
+            fill="toself", fillcolor=COLORS["band"], line=dict(width=0),
+            name="P10–P90", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=fc["target_time"], y=fc["p50_mw"], mode="lines",
+                                 name="P50 forecast", line=dict(color=COLORS["p50"], width=2.5)))
+        fig.add_trace(go.Scatter(x=recent["timestamp"], y=recent["pv_power_kw"] / 1000.0,
+                                 mode="lines+markers", name="Measured (PV_Live)",
+                                 line=dict(color=COLORS["observed"], width=2), marker=dict(size=4)))
+        fig.update_layout(**PLOTLY_LAYOUT, height=440, xaxis_title="Time (UTC)",
+                          yaxis_title="PV generation (MW)",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+        styled_axes(fig)
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(fc[["target_time", "p10_mw", "p50_mw", "p90_mw"]].round(1),
+                     use_container_width=True, hide_index=True)
+
+    backtests = sorted(PREDICTIONS_DIR.glob("backtest_*.csv"))
+    if backtests:
+        st.markdown("---")
+        section_header("Out-of-sample backtest",
+                       "Past forecasts replayed through the live pipeline and scored against "
+                       "measured PV_Live generation (python predict.py backtest)")
+        choice = st.selectbox("Backtest run", [p.stem for p in backtests], index=len(backtests) - 1)
+        bt = pd.read_csv(PREDICTIONS_DIR / f"{choice}.csv", parse_dates=["issue_time", "target_time"])
+        metrics_path = METRICS_DIR / f"{choice}.json"
+        if metrics_path.exists():
+            m = load_json(metrics_path)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("nMAE", f"{m['nmae_pct']:.2f}%")
+            c2.metric("Daylight MAE", f"{m['daylight_mae_mw']:.0f} MW")
+            c3.metric("Skill vs persistence", f"{m['rmse_skill_vs_persistence']:.3f}")
+            c4.metric("PICP (nominal 0.80)", f"{m['picp']:.3f}")
+        lead = st.select_slider("Lead time (hours)", sorted(bt["lead_hours"].unique()), value=2.0)
+        d = bt[bt["lead_hours"] == lead].sort_values("target_time")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=pd.concat([d["target_time"], d["target_time"][::-1]]),
+            y=pd.concat([d["p90_mw"], d["p10_mw"][::-1]]),
+            fill="toself", fillcolor=COLORS["band"], line=dict(width=0),
+            name="P10–P90", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=d["target_time"], y=d["p50_mw"], mode="lines",
+                                 name=f"P50 ({lead:g} h ahead)", line=dict(color=COLORS["p50"], width=2)))
+        fig.add_trace(go.Scatter(x=d["target_time"], y=d["actual_mw"], mode="markers",
+                                 name="Measured", marker=dict(color=COLORS["observed"], size=4)))
+        fig.update_layout(**PLOTLY_LAYOUT, height=420, xaxis_title="Time (UTC)",
+                          yaxis_title="PV generation (MW)",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+        styled_axes(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ------------------------------------------------------------------ #
@@ -538,8 +633,8 @@ elif page == "Baselines & Ablations":
 # TRAINING
 # ------------------------------------------------------------------ #
 elif page == "Training":
-    section_header("Training history", "28 epochs, early-stopped on validation pinball loss")
     history = load_history()
+    section_header("Training history", f"{len(history)} epochs, early-stopped on validation pinball loss")
     epochs = [h["epoch"] for h in history]
 
     col1, col2 = st.columns(2)

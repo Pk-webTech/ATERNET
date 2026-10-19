@@ -8,16 +8,32 @@ capacity-normalized series at data/interim/pv_clean.parquet.
 import numpy as np
 import pandas as pd
 
-from config.paths import RAW_PV_DIR, PV_CLEAN_PATH
+from typing import Optional
+
+from config.paths import RAW_PV_DIR, RAW_METADATA_DIR, PV_CLEAN_PATH
 from src.utils.site_metadata import DEFAULT_SITE
 from src.utils.constants import COL_TIMESTAMP, COL_PV_POWER, COL_PV_NORM
 from src.utils.logger import get_logger
-from src.utils.io import load_parquet, save_parquet
+from src.utils.io import load_parquet, save_parquet, load_json
 
 logger = get_logger(__name__)
 
 
-def clean_pv_series(df: pd.DataFrame, capacity_kw: float = DEFAULT_SITE.capacity_kw) -> pd.DataFrame:
+def _resolved_capacity_kw() -> float:
+    """Nameplate capacity of the site actually downloaded, else the demo default."""
+    path = RAW_METADATA_DIR / "resolved_site_metadata.json"
+    if path.exists():
+        return float(load_json(path)["capacity_kw"])
+    return DEFAULT_SITE.capacity_kw
+
+
+def clean_pv_series(df: pd.DataFrame, capacity_kw: Optional[float] = None) -> pd.DataFrame:
+    """
+    Capacity used for normalization, in priority order: a per-row
+    `capacity_kw` column (PV_Live: regional capacity grows over time, so
+    a fixed denominator would make 2023 look systematically dimmer than
+    2026), then the `capacity_kw` argument, then the resolved site.
+    """
     df = df.copy()
     df[COL_TIMESTAMP] = pd.to_datetime(df["timestamp"])
     df = df.sort_values(COL_TIMESTAMP).drop_duplicates(subset=COL_TIMESTAMP)
@@ -50,7 +66,7 @@ def clean_pv_series(df: pd.DataFrame, capacity_kw: float = DEFAULT_SITE.capacity
 
     # Ancillary columns can also carry NaNs introduced by the reindex above;
     # leaving them would poison clear_sky_index / regime assignment later.
-    for col in ["ghi_measured", "ambient_temp_c", "solar_elevation_deg"]:
+    for col in ["ghi_measured", "ambient_temp_c", "solar_elevation_deg", "capacity_kw"]:
         if col in df.columns:
             df[col] = df[col].interpolate(limit_direction="both").ffill().bfill()
 
@@ -59,7 +75,9 @@ def clean_pv_series(df: pd.DataFrame, capacity_kw: float = DEFAULT_SITE.capacity
                 f"{n_missing_after} required fallback imputation.")
 
     # Normalize by nameplate capacity
-    df[COL_PV_NORM] = np.clip(df["pv_power_kw"] / capacity_kw, 0.0, 1.0)
+    if "capacity_kw" not in df.columns:
+        df["capacity_kw"] = capacity_kw if capacity_kw is not None else _resolved_capacity_kw()
+    df[COL_PV_NORM] = np.clip(df["pv_power_kw"] / df["capacity_kw"], 0.0, 1.0)
 
     df = df.reset_index()
     return df

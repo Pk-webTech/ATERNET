@@ -27,12 +27,14 @@ from src.phase4.gating_network import GatingNetwork
 
 
 class AdaptiveRouter(nn.Module):
-    def __init__(self, h_expert_dim: int = 128, h_sigma_dim: int = 32, n_experts: int = 4):
+    def __init__(self, h_expert_dim: int = 128, h_sigma_dim: int = 32, n_experts: int = 4,
+                 residual_gate: bool = False):
         super().__init__()
         self.sigma_nwp_extractor = SigmaNWPExtractor()
         self.sigma_expert_calibrator = SigmaExpertCalibrator()
         self.fusion = UncertaintyFusion(h_expert_dim=h_expert_dim)
-        self.gate = GatingNetwork(h_expert_dim=h_expert_dim, h_sigma_dim=h_sigma_dim, n_experts=n_experts)
+        self.gate = GatingNetwork(h_expert_dim=h_expert_dim, h_sigma_dim=h_sigma_dim, n_experts=n_experts,
+                                  residual=residual_gate)
         self.n_experts = n_experts
 
     def forward(self, h_expert: torch.Tensor, h_sigma: torch.Tensor,

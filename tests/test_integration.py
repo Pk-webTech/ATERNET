@@ -30,6 +30,11 @@ def tiny_run(tmp_path_factory):
     `test_beats_climatology_baseline` fail for want of training rather
     than for any real defect. 5 epochs on 1024 samples clears it with
     margin and still runs in a few seconds.
+
+    The 1024 samples are spread evenly over the whole training period.
+    On multi-year real data the first 1024 windows are a single winter,
+    mostly night: a model trained on that learns "predict zero" and
+    cannot beat climatology on a test split that includes summer.
     """
     from torch.utils.data import DataLoader, Subset
     from src.models.aternet import ATERNET
@@ -39,9 +44,11 @@ def tiny_run(tmp_path_factory):
     torch.manual_seed(0)
     train_ds = ATERNETDataset("train")
     val_ds = ATERNETDataset("val")
-    train_loader = DataLoader(Subset(train_ds, range(1024)), batch_size=32,
+    train_idx = np.linspace(0, len(train_ds) - 1, 1024).astype(int).tolist()
+    val_idx = np.linspace(0, len(val_ds) - 1, 128).astype(int).tolist()
+    train_loader = DataLoader(Subset(train_ds, train_idx), batch_size=32,
                               shuffle=True, drop_last=True)
-    val_loader = DataLoader(Subset(val_ds, range(128)), batch_size=32)
+    val_loader = DataLoader(Subset(val_ds, val_idx), batch_size=32)
 
     kwargs = dict(n_seq_features=train_ds.n_seq_features,
                   n_nwp_features=train_ds.n_nwp_features,

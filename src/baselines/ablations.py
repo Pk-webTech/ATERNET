@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import copy
 from typing import Optional
 
@@ -34,6 +35,7 @@ import torch
 
 from config.paths import METRICS_DIR, CHECKPOINTS_DIR, SCALERS_PATH, ensure_dirs
 from config.training_config import TRAINING_CONFIG, TrainingConfig
+from src.losses import composite_loss
 from src.models.aternet import ATERNET
 from src.training.dataset import ATERNETDataset, build_dataloaders
 from src.training.trainer import Trainer
@@ -51,6 +53,8 @@ ABLATION_NAMES = [
     "no_gate", "fixed_temp", "fixed_width",
     "sigma_nwp_only", "sigma_exp_only", "no_dense_expert",
 ]
+# Runnable via run_ablation but not part of the run_all() ablation set.
+EXTRA_VARIANTS = ["full", "residual_gate", "residual_gate_skip"]
 
 
 def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
@@ -78,37 +82,23 @@ def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
         model.router.forward = uniform_gate_forward
 
     elif ablation == "fixed_temp":
-        # Force temperature to 1.0 always
+        # Force temperature to 1.0 always. The gate already returns its raw
+        # logits, so re-softmax them without the sigma-dependent divisor.
         original_gate_forward = model.router.gate.forward
 
-        def fixed_temp_forward(h_expert, h_sigma, sigma_total):
-            out = original_gate_forward(h_expert, h_sigma, sigma_total)
-            # Recompute logits at T=1
-            logits = out.get("_logits", None)
-            if logits is not None:
-                out["gate_weights"] = torch.softmax(logits, dim=-1)
-                out["temperature"] = torch.ones_like(out["temperature"])
+        def fixed_temp_gate(h_expert, h_sigma, fusion_out):
+            out = original_gate_forward(h_expert, h_sigma, fusion_out)
+            logits = out["logits"]
+            if model.router.gate.residual:
+                logits = model.router.gate.delta * logits
+            out["gate_weights"] = torch.softmax(logits, dim=-1)
+            out["temperature"] = torch.ones_like(out["temperature"])
             return out
 
-        # Patch at the router level instead
-        original_rf = model.router.forward
+        model.router.gate.forward = fixed_temp_gate
 
-        def fixed_temp_router(h_expert, h_sigma, x_sigma_raw,
-                              sigma_expert_raw, expert_predictions_stacked):
-            out = original_rf(h_expert, h_sigma, x_sigma_raw,
-                              sigma_expert_raw, expert_predictions_stacked)
-            # Recompute gate at T=1
-            gate_logits = model.router.gate.logits_net(
-                torch.cat([h_expert, h_sigma], dim=-1)
-            )
-            gate_weights = torch.softmax(gate_logits, dim=-1)
-            y_hat = (gate_weights.unsqueeze(-1) * expert_predictions_stacked).sum(dim=1)
-            out["gate_weights"] = gate_weights
-            out["y_hat_routed"] = y_hat
-            out["temperature"] = torch.ones(h_expert.shape[0], device=h_expert.device)
-            return out
-
-        model.router.forward = fixed_temp_router
+    elif ablation in ("full", "residual_gate", "residual_gate_skip"):
+        pass  # no patching; these are constructor flags (see run_ablation)
 
     elif ablation == "fixed_width":
         # Zero out σ_total's contribution to interval width
@@ -148,7 +138,7 @@ def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
         model.router.forward = exp_only_router
 
     elif ablation == "no_dense_expert":
-        # Handled at training time: see trainer override below
+        # Handled at training time: see _dense_expert_disabled() in run_ablation
         pass
 
     else:
@@ -157,14 +147,42 @@ def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
     return model
 
 
-def run_ablation(ablation: str, epochs: int = 50) -> dict:
-    """Train one ablation variant and evaluate it."""
+@contextlib.contextmanager
+def _dense_expert_disabled():
+    """
+    Zero the dense-expert loss weight for the duration of a run.
+    compute_composite_loss looks up expert_loss_weight in its own module
+    namespace at call time, so swapping it here needs no change to the
+    loss or the trainer.
+    """
+    original = composite_loss.expert_loss_weight
+    composite_loss.expert_loss_weight = lambda *a, **k: 0.0
+    try:
+        yield
+    finally:
+        composite_loss.expert_loss_weight = original
+
+
+def run_ablation(ablation: str, epochs: int = 50, seed: int = 42,
+                 metrics_dir=None, checkpoints_dir=None,
+                 base_model_kwargs: Optional[dict] = None) -> dict:
+    """
+    Train one ablation variant and evaluate it.
+
+    metrics_dir / checkpoints_dir default to the project-wide locations;
+    multi-seed runs pass their own so they don't land in outputs/metrics/
+    where comparison_table.py globs ablation_*.json.
+    """
     logger.info(f"{'='*60}")
-    logger.info(f"Running ablation: {ablation}")
+    logger.info(f"Running ablation: {ablation} (seed {seed})")
     logger.info(f"{'='*60}")
 
     ensure_dirs()
-    set_seed(42)
+    metrics_dir = metrics_dir or METRICS_DIR
+    checkpoints_dir = checkpoints_dir or CHECKPOINTS_DIR
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_loader, val_loader, _, train_ds = build_dataloaders(batch_size=64)
@@ -176,19 +194,27 @@ def run_ablation(ablation: str, epochs: int = 50) -> dict:
         n_sigma_features=train_ds.n_sigma_features,
         horizon=train_ds.horizon,
     )
+    # Stored in model_kwargs so the checkpoint rebuilds the same model.
+    # base_model_kwargs lets an ablation run on top of a non-default
+    # architecture (e.g. the final residual-gate + skip model).
+    model_kwargs.update(base_model_kwargs or {})
+    if ablation in ("residual_gate", "residual_gate_skip"):
+        model_kwargs["residual_gate"] = True
+    if ablation == "residual_gate_skip":
+        model_kwargs["last_step_skip"] = True
     model = ATERNET(**model_kwargs)
     model = _patch_model(model, ablation)
 
     cfg = TrainingConfig()
     cfg.epochs = epochs
 
-    ckpt_best = CHECKPOINTS_DIR / f"ablation_{ablation}_best.pt"
-    ckpt_last = CHECKPOINTS_DIR / f"ablation_{ablation}_last.pt"
-    history_path = METRICS_DIR / f"ablation_{ablation}_history.json"
+    ckpt_best = checkpoints_dir / f"ablation_{ablation}_best.pt"
+    ckpt_last = checkpoints_dir / f"ablation_{ablation}_last.pt"
+    history_path = metrics_dir / f"ablation_{ablation}_history.json"
 
-    # For no_dense_expert, disable regime weights
+    # Regime weights only act through the dense expert loss, so they go
+    # with it for no_dense_expert.
     use_regime_weights = (ablation != "no_dense_expert")
-    dense_expert_w0 = 0.0 if ablation == "no_dense_expert" else None
 
     trainer = Trainer(
         model, train_loader, val_loader, device=device, cfg=cfg,
@@ -197,11 +223,11 @@ def run_ablation(ablation: str, epochs: int = 50) -> dict:
         best_path=ckpt_best, last_path=ckpt_last, history_path=history_path,
     )
 
-    # If no_dense_expert, override the expert weight to 0
     if ablation == "no_dense_expert":
-        trainer._expert_weight_fn = lambda epoch: 0.0
-
-    trainer.fit(epochs=epochs)
+        with _dense_expert_disabled():
+            trainer.fit(epochs=epochs)
+    else:
+        trainer.fit(epochs=epochs)
 
     # Evaluate
     from src.training.checkpoint import load_checkpoint
@@ -240,7 +266,7 @@ def run_ablation(ablation: str, epochs: int = 50) -> dict:
         "per_horizon": per_h,
     }
 
-    out_path = METRICS_DIR / f"ablation_{ablation}.json"
+    out_path = metrics_dir / f"ablation_{ablation}.json"
     save_json(results, out_path)
     logger.info(f"Ablation {ablation} results -> {out_path}")
     logger.info(f"  nRMSE {headline['nrmse_pct']:.2f}% | PICP {headline['picp']:.3f} "
@@ -264,7 +290,7 @@ def run_all(epochs: int = 50):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--ablation", choices=ABLATION_NAMES, default=None)
+    p.add_argument("--ablation", choices=ABLATION_NAMES + EXTRA_VARIANTS, default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--epochs", type=int, default=50)
     return p.parse_args()

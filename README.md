@@ -3,97 +3,146 @@
 **Adaptive Temporal Expert Routing Network with Dynamic Quantile Decoding
 for Probabilistic Solar Power Forecasting**
 
-This repository implements the full pipeline, end to end:
+Give it a weather forecast and recent solar generation, and it predicts the
+next 8 hours of PV power as P10 / P50 / P90 intervals. It is trained and
+tested on **real measured generation**, and it can forecast **live**
+without owning a solar panel and without any API key.
 
-- **Phase 1 — Data Pipeline** (synthesis → cleaning → features → windows → splits)
-- **Phase 2 — Temporal Encoding** (PatchTST backbone + NWP cross-attention)
+- **Phase 1 — Data Pipeline** (real-data acquisition → cleaning → features → windows → splits)
+- **Phase 2 — Temporal Encoding** (PatchTST backbone + NWP cross-attention over history *and* forecast horizon)
 - **Phase 3 — Expert Modeling** (4 regime experts + dense expert pool)
 - **Phase 4 — Dual-Uncertainty Routing** (σ_NWP + σ_Expert fusion + adaptive gating)
 - **Phase 5 — Probabilistic Decoding** (P10/P50/P90, non-crossing by construction)
-- **Training** (composite objective, cosine schedule, early stopping, checkpointing)
-- **Evaluation** (deterministic + probabilistic metrics, baselines, per-regime/per-horizon)
-- **Visualization** (7 diagnostic figures + attention maps)
-- **Tests** (50 unit + integration tests, all passing)
+- **Training / Evaluation / Visualization / Tests** (55 tests, all passing)
+- **Live forecasting + out-of-sample backtesting** (`predict.py`, "Live Forecast" page in the app)
 
-`ATERNET` (`src/models/aternet.py`) wires Phases 2–5 into one model:
-**967,132 parameters**, verified forward + backward with zero broken gradients.
+`ATERNET` (`src/models/aternet.py`) wires Phases 2–5 into one model.
 
-## Results (test split)
+## Where the real data comes from
 
-Trained 28 epochs (early-stopped), evaluated on the held-out chronological
-test split of 1,309 windows. **Full numbers: `outputs/reports/evaluation_report.md`.**
+There's no access to a panel's own meter, so both inputs come from free
+public sources (configured in `config/data_source.py`):
+
+| Input | Source | What it provides |
+|---|---|---|
+| Solar generation | [Sheffield Solar **PV_Live**](https://www.solar.sheffield.ac.uk/pvlive/) | Measured half-hourly PV output + installed capacity for every GB region, 2013→now, updated live |
+| Weather | [**Open-Meteo**](https://open-meteo.com) | Forecasts from 5 independent NWP models (GFS, ICON, UKMO, Météo-France, GEM): irradiance, cloud, temperature, wind |
+
+The five weather models form a **multi-model ensemble**: their mean is the
+weather forecast, their spread is σ_NWP (the uncertainty signal Phase 4
+routes on). Training uses Open-Meteo's historical-forecast archive; live
+forecasting uses the same models from the live API, so inputs match.
+
+Default region: **NPG Yorkshire** (PV_Live region 23, ~1.17 GWp installed),
+trained on 2023-01-01 → 2026-09-30 (65,713 half-hours, 16,413 windows).
+Weather is averaged over three points across the region
+(`src/phase1/regions.py`). Change `PVLIVE_REGION_ID` to use any GB region.
+
+The original single-rooftop source (openclimatefix/uk_pv + ERA5 via CDS) is
+still available as `DATA_SOURCE = "uk_pv_era5"`, but it has no live feed.
+
+## Results
+
+### Held-out test split (Mar → Sep 2026, 2,462 windows, measured PV_Live output)
 
 | Metric | Value |
 |---|---|
-| nRMSE (% of capacity) | **4.31** |
-| nMAE (% of capacity) | **1.72** |
-| R² | 0.9488 |
-| PICP (nominal 0.80) | 0.880 |
-| PINAW (mean interval width) | 0.0460 |
-| Winkler score | 0.0924 |
-| RMSE skill vs persistence | **0.708** |
+| nRMSE (% of capacity) | **4.24** |
+| nMAE (% of capacity) | **2.23** |
+| R² | **0.951** |
+| PICP (nominal 0.80) | **0.800** |
+| PINAW (mean interval width) | 0.053 |
+| Winkler score | 0.104 |
+| RMSE skill vs persistence | **0.812** |
 | Quantile-crossing violations | **0** |
 
-The dual-uncertainty signal tracks realised error: `corr(σ_total, |error|) = 0.52`
-and `corr(interval width, |error|) = 0.63`. That correlation is the claim the
-whole architecture rests on, so it is reported on every evaluation run.
+Per-regime coverage: overcast 0.820, dawn_ramp 0.812, clear_peak 0.755,
+volatile 0.745. Full numbers: `outputs/reports/evaluation_report.md`.
 
-**Read the per-regime table before quoting the headline PICP.** Aggregate
-coverage of 0.880 looks well-calibrated only because the overcast regime
-dominates the sample count (850 of 1,309 windows). Coverage is over-wide in
-overcast (0.921) and too narrow in dawn_ramp (0.776) and volatile (0.736) —
-the intervals are miscalibrated in opposite directions across regimes, and a
-single global sharpness weight cannot fix that. Per-regime width calibration
-is the obvious next step.
+Baselines on the same split, all given the same inputs including
+forecast-horizon weather:
 
-**All metrics are measured on synthetic data** (no live PV telemetry or ECMWF
-access was available). They describe performance on a physically-grounded
-simulation, not on a real site. See `docs/architecture.md` §6 for the full
-limitations list.
+| Model | nRMSE % | PICP | Winkler |
+|---|---|---|---|
+| **LightGBM quantile** | **3.71** | 0.820 | 0.101 |
+| PatchTST quantile | 4.21 | 0.888 | **0.097** |
+| ATERNET | 4.24 | **0.800** | 0.104 |
+| LSTM quantile | 6.96 | 0.844 | 0.100 |
+
+On real data, ATERNET does **not** beat a well-fed gradient-boosting
+baseline on point accuracy. Its advantage is calibration: PICP lands on the
+0.80 nominal while the other models over-cover. Treat the expert-routing
+claim as unproven until it beats LightGBM.
+
+### Out-of-sample backtest through the live pipeline (1–16 Oct 2026)
+
+The model never saw these dates. Forecasts were issued 6×/day from raw API
+data using only information available at each issue time, then scored
+against what PV_Live measured:
+
+| Metric | Value |
+|---|---|
+| Forecasts / half-hours scored | 96 / 1,536 |
+| nMAE / nRMSE (% of capacity) | 3.13 / 4.87 |
+| Daylight MAE | **50 MW** (mean output 269 MW; day-ahead persistence 146 MW) |
+| RMSE skill vs persistence | 0.646 |
+| PICP (nominal 0.80) | 0.757 |
+
+![backtest](outputs/plots/backtest_2026-10-01_2026-10-16.png)
+
+**Caveats.** (1) Open-Meteo's historical-forecast archive stitches together
+the first hours of successive model runs, so in training and backtests the
+"forecast" weather is somewhat better than a single live run's 8-hour
+forecast. Expect live errors to be a little larger. (2) PV_Live is a regional
+*aggregate*, which is smoother than a single site; a single rooftop system
+will have larger relative errors. (3) The intervals are slightly too narrow
+in clear_peak/volatile conditions and in the October backtest (0.75–0.76 vs
+0.80 nominal).
 
 ## Quickstart
 
 ```bash
 # 1. Create environment
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scriptsctivate
 pip install -r requirements.txt
 
-# 2. Build the dataset (Phase 1)
+# 2. Download real data + build the dataset (Phase 1, ~15 min first time)
 python run_pipeline.py
 
-# 3. Train
+# 3. Train (~10 min on CPU)
 python -m src.training.train --epochs 50 --batch-size 64
 
 # 4. Evaluate on the test split
 python -m src.evaluation.evaluate --split test
 
-# 5. Generate all diagnostic figures
-python -m src.visualization.generate_report
+# 5. Forecast the next 8 hours from right now
+python predict.py live
 
-# Or run all four steps in sequence:
-python run_all.py
+# 6. Replay past forecasts and score them against measured generation
+python predict.py backtest --start 2026-10-01 --end 2026-10-16
+
+# Dashboard (includes the Live Forecast page)
+streamlit run app.py
 
 # Tests
 python -m pytest tests/ -q
 ```
 
-Step 2 generates (seeded, reproducible) synthetic PV generation and ECMWF-style
-ensemble NWP data — since no live telemetry/API credentials are configured —
-cleans and merges them, engineers features, builds sliding windows, and
-writes the final train/val/test tensors to `data/processed/`.
+API responses for fully-past date ranges are cached in `data/cache/http/`,
+so re-running the pipeline doesn't re-download. Changing the region or
+dates in `config/data_source.py` requires deleting `data/raw/*` first.
 
 ## Phase 1 outputs
 
 ```
-data/raw/pv/pv_raw.parquet              raw synthetic PV series
-data/raw/nwp/nwp_ensemble.parquet       raw synthetic NWP ensemble (long format)
+data/raw/pv/pv_raw.parquet              measured PV (timestamp, pv_power_kw, capacity_kw, solar_elevation_deg)
+data/raw/nwp/nwp_ensemble.parquet       weather per model/member, aligned to the PV half-hour grid
+data/raw/metadata/resolved_site_metadata.json   region, coordinates, capacity, source
 data/interim/pv_clean.parquet           cleaned, gap-filled, capacity-normalized PV
 data/interim/nwp_clean.parquet          ensemble mean + std per timestamp
 data/interim/features.parquet           merged + engineered feature table
-data/processed/dataset_train.npz        X_seq, X_sigma, X_nwp, y, meta (train)
-data/processed/dataset_val.npz          same, validation split
-data/processed/dataset_test.npz         same, test split
+data/processed/dataset_{train,val,test}.npz   X_seq, X_sigma, X_nwp, y, meta
 data/processed/scalers.pkl              min-max scalers fit on train only
 data/processed/dataset_metadata.json    shapes, feature lists, config snapshot
 ```
@@ -104,12 +153,12 @@ data/processed/dataset_metadata.json    shapes, feature lists, config snapshot
 |---|---|---|
 | `X_seq` | `(N, 48, 10)` | Temporal encoder input: pv_norm, ghi, cloud, temp, wind, clear_sky_index, hour/doy sin-cos |
 | `X_sigma` | `(N, 48, 6)` | Raw uncertainty features (`sigma_nwp_*` + ensemble spread; expert-disagreement column is a placeholder until Phase 3) |
-| `X_nwp` | `(N, 48, 4)` | NWP ensemble-mean features |
-| `y` | `(N, 16)` | pv_norm target, 16-step (4h @ 15min) horizon |
+| `X_nwp` | `(N, 64, 4)` | NWP ensemble-mean features over the 48-step lookback **and** the 16-step forecast horizon |
+| `y` | `(N, 16)` | pv_norm target, 16-step (8h @ 30min) horizon |
 | `meta` | `(N, 9)` | Regime one-hot/id + volatility features, snapshot at forecast issue time |
 
-Window size = 48 steps (12h lookback), horizon = 16 steps (4h ahead),
-stride = 4, native frequency = 15 minutes — all configurable in
+Window size = 48 steps (24h lookback), horizon = 16 steps (8h ahead),
+stride = 4, native frequency = 30 minutes — all configurable in
 `config/model_config.py` (`DataConfig`).
 
 ## Phase 2 — Temporal Encoder
@@ -264,7 +313,7 @@ scatter, and the gate-by-regime matrix — plus NWP cross-attention maps to
 ## Tests
 
 ```bash
-python -m pytest tests/ -q     # 50 passed
+python -m pytest tests/ -q     # 55 passed
 ```
 
 | File | Covers |
@@ -272,6 +321,7 @@ python -m pytest tests/ -q     # 50 passed
 | `test_phase1_pipeline.py` | Shapes, no NaNs, **temporal-leakage check**, train-only scaler fit, regime coverage, gap rejection |
 | `test_phases_2_5.py` | The three architectural guarantees, output ranges, σ_expert detachment, gradient health |
 | `test_losses_and_metrics.py` | Hand-computed loss/metric values, pinball asymmetry, Winkler trade-off behaviour |
+| `test_realtime_sources.py` | Solar geometry vs longitude, Open-Meteo parsing + time alignment, per-row capacity normalization, live inference window layout |
 | `test_integration.py` | Real training run, loss decrease, gate non-collapse, checkpoint round-trip, baseline comparison, cap validation |
 
 The three guarantees are enforced structurally and each has a named test:

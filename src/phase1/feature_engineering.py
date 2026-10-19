@@ -24,7 +24,7 @@ from src.utils.constants import COL_TIMESTAMP, REGIME_LIST, REGIME_TO_ID
 from src.utils.helpers import add_time_features
 from src.utils.logger import get_logger
 from src.utils.io import load_parquet, save_parquet
-from src.phase1.download_pv import _clear_sky_ghi
+from src.utils.solar import clear_sky_ghi as _clear_sky_ghi
 
 logger = get_logger(__name__)
 

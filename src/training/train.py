@@ -29,6 +29,10 @@ def parse_args():
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--no-regime-weights", action="store_true",
                    help="Disable per-expert regime up-weighting in the dense expert loss.")
+    p.add_argument("--residual-gate", action="store_true",
+                   help="Use the residual (ReZero-style) gate: starts at uniform routing.")
+    p.add_argument("--last-step-skip", action="store_true",
+                   help="Add a zero-initialised linear shortcut from the last step + horizon NWP.")
     return p.parse_args()
 
 
@@ -51,6 +55,10 @@ def main():
         n_sigma_features=train_ds.n_sigma_features,
         horizon=train_ds.horizon,
     )
+    if args.residual_gate:
+        model_kwargs["residual_gate"] = True  # stored in the checkpoint
+    if args.last_step_skip:
+        model_kwargs["last_step_skip"] = True
     model = ATERNET(**model_kwargs)
 
     device = torch.device(args.device) if args.device else None

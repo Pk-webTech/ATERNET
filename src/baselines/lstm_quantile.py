@@ -60,8 +60,14 @@ class LSTMQuantile(nn.Module):
 
 
 def _concat_features(ds: ATERNETDataset) -> torch.Tensor:
-    """Concatenate all per-step features into (N, T, F_total)."""
-    return torch.cat([ds.x_seq, ds.x_nwp, ds.x_sigma], dim=-1)
+    """Concatenate all per-step lookback features into (N, T, F_total).
+
+    x_nwp also spans the forecast horizon; per-step concatenation needs
+    equal lengths, so the horizon NWP is flattened onto every step.
+    """
+    T = ds.x_seq.shape[1]
+    nwp_future = ds.x_nwp[:, T:, :].flatten(1).unsqueeze(1).expand(-1, T, -1)
+    return torch.cat([ds.x_seq, ds.x_nwp[:, :T], nwp_future, ds.x_sigma], dim=-1)
 
 
 @torch.no_grad()

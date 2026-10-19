@@ -42,7 +42,7 @@ MAX_LOG_TEMPERATURE = 8.0
 class GatingNetwork(nn.Module):
     def __init__(self, h_expert_dim: int = 128, h_sigma_dim: int = 32,
                  n_experts: int = 4, hidden_dim: int = 64, dropout: float = 0.1,
-                 init_beta: float = 1.0):
+                 init_beta: float = 1.0, residual: bool = False):
         super().__init__()
         gate_input_dim = h_expert_dim + h_sigma_dim + 3  # + [sigma_nwp_norm, sigma_expert_norm, alpha]
 
@@ -52,6 +52,15 @@ class GatingNetwork(nn.Module):
         )
         self.raw_beta = nn.Parameter(torch.tensor(float(init_beta)))
         self.n_experts = n_experts
+
+        # Residual (ReZero-style) gate: weights = softmax(delta * logits / T)
+        # with delta initialised to 0, so training starts at exactly uniform
+        # routing (1/K, i.e. the `no_gate` solution) and only departs from it
+        # as far as it pays off in validation loss. Off by default so existing
+        # checkpoints and behaviour are unchanged.
+        self.residual = residual
+        if residual:
+            self.delta = nn.Parameter(torch.zeros(()))
 
     def forward(self, h_expert: torch.Tensor, h_sigma: torch.Tensor,
                 fusion_out: dict) -> dict:
@@ -79,7 +88,10 @@ class GatingNetwork(nn.Module):
         log_t = torch.clamp(beta * sigma_total, -MAX_LOG_TEMPERATURE, MAX_LOG_TEMPERATURE)
         temperature = torch.exp(log_t)  # (B,), strictly positive and finite
 
-        gate_weights = torch.softmax(logits / temperature.unsqueeze(1), dim=1)
+        scaled = logits / temperature.unsqueeze(1)
+        if self.residual:
+            scaled = self.delta * scaled
+        gate_weights = torch.softmax(scaled, dim=1)
 
         with torch.no_grad():
             p = gate_weights.clamp_min(1e-8)

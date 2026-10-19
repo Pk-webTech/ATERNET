@@ -45,17 +45,17 @@ logger = get_logger(__name__)
 def _run_acquisition_if_needed():
     pv_raw_path = RAW_PV_DIR / "pv_raw.parquet"
     if not pv_raw_path.exists():
-        logger.info("Raw PV data not found -- generating synthetic series.")
+        logger.info("Raw PV data not found -- downloading.")
         download_pv.main()
     else:
-        logger.info(f"Raw PV data already exists at {pv_raw_path}, skipping generation.")
+        logger.info(f"Raw PV data already exists at {pv_raw_path}, skipping download.")
 
     nwp_raw_path = RAW_NWP_DIR / "nwp_ensemble.parquet"
     if not nwp_raw_path.exists():
-        logger.info("Raw NWP ensemble not found -- generating synthetic ensemble.")
+        logger.info("Raw NWP ensemble not found -- downloading.")
         download_nwp.main()
     else:
-        logger.info(f"Raw NWP data already exists at {nwp_raw_path}, skipping generation.")
+        logger.info(f"Raw NWP data already exists at {nwp_raw_path}, skipping download.")
 
 
 def _scale_split(arr: np.ndarray, scaler: dict) -> np.ndarray:

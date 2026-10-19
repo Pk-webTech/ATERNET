@@ -41,3 +41,6 @@ env/
 # Misc
 *.log
 *.tmp
+
+# Archived artifacts from earlier data sources
+archive/

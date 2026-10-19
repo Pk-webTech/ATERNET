@@ -23,7 +23,9 @@ class ATERNET(nn.Module):
                  h_expert_dim: int = EMBEDDING_CONFIG.h_expert_dim,
                  h_sigma_dim: int = EMBEDDING_CONFIG.h_sigma_dim,
                  h_nwp_dim: int = EMBEDDING_CONFIG.h_nwp_dim,
-                 n_experts: int = EXPERT_CONFIG.n_experts):
+                 n_experts: int = EXPERT_CONFIG.n_experts,
+                 residual_gate: bool = False,
+                 last_step_skip: bool = False):
         super().__init__()
         self.backbone = TemporalBackbone(
             n_seq_features=n_seq_features,
@@ -33,11 +35,21 @@ class ATERNET(nn.Module):
         )
         self.expert_pool = ExpertPool(in_dim=h_expert_dim, horizon=horizon)
         self.router = AdaptiveRouter(h_expert_dim=h_expert_dim, h_sigma_dim=h_sigma_dim,
-                                     n_experts=n_experts)
+                                     n_experts=n_experts, residual_gate=residual_gate)
         self.decoder = ProbabilisticDecoder(h_expert_dim=h_expert_dim, h_nwp_dim=h_nwp_dim,
                                             horizon=horizon)
         self.horizon = horizon
         self.n_experts = n_experts
+
+        # Optional zero-initialised linear shortcut from the latest observed
+        # step and the forecast-horizon NWP to the routed forecast. The deep
+        # path then only has to learn the nonlinear correction on top of a
+        # linear nowcast. Zero init => identical to the plain model at step 0.
+        self.last_step_skip = None
+        if last_step_skip:
+            self.last_step_skip = nn.Linear(n_seq_features + horizon * n_nwp_features, horizon)
+            nn.init.zeros_(self.last_step_skip.weight)
+            nn.init.zeros_(self.last_step_skip.bias)
 
     def forward(self, x_seq: torch.Tensor, x_nwp: torch.Tensor, x_sigma: torch.Tensor,
                 return_attention: bool = False) -> dict:
@@ -47,13 +59,19 @@ class ATERNET(nn.Module):
             emb["h_expert"], emb["h_sigma"], x_sigma,
             pool_out["sigma_expert"], pool_out["stacked"],
         )
+        y_hat_routed = router_out["y_hat_routed"]
+        if self.last_step_skip is not None:
+            window = x_seq.shape[1]
+            skip_in = torch.cat([x_seq[:, -1, :], x_nwp[:, window:, :].flatten(1)], dim=1)
+            y_hat_routed = y_hat_routed + self.last_step_skip(skip_in)
+
         quantiles = self.decoder(
-            router_out["y_hat_routed"], emb["h_expert"], emb["h_nwp"], router_out["sigma_total"],
+            y_hat_routed, emb["h_expert"], emb["h_nwp"], router_out["sigma_total"],
         )
 
         out = {
             **quantiles,
-            "y_hat_routed": router_out["y_hat_routed"],
+            "y_hat_routed": y_hat_routed,
             "gate_weights": router_out["gate_weights"],
             "temperature": router_out["temperature"],
             "entropy": router_out["entropy"],

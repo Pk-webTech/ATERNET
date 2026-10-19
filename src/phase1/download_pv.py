@@ -1,5 +1,10 @@
 """
-Phase 1 -- PV data acquisition (REAL DATA: openclimatefix/uk_pv).
+Phase 1 -- PV data acquisition.
+
+Dispatches on config/data_source.py: "pvlive_openmeteo" (default) pulls
+measured regional generation from Sheffield Solar PV_Live -- see
+src/phase1/pvlive_openmeteo.py. "uk_pv_era5" uses the single-site
+openclimatefix/uk_pv dataset documented below.
 
 Replaces the synthetic generator with the actual `openclimatefix/uk_pv`
 HuggingFace dataset: 396 UK PV sites, half-hourly generation readings +
@@ -44,43 +49,19 @@ import numpy as np
 import pandas as pd
 from huggingface_hub.utils import EntryNotFoundError
 
+from config.data_source import DATA_SOURCE, PVLIVE_REGION_ID, START_DATE as SOURCE_START, END_DATE as SOURCE_END
 from config.paths import RAW_PV_DIR, RAW_METADATA_DIR
+from src.utils.solar import solar_elevation_deg, clear_sky_ghi
 from src.utils.logger import get_logger
 from src.utils.io import save_parquet, save_json
 
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------
-# Pure-geometry helpers.
-# ---------------------------------------------------------------------
-
-def _solar_elevation_deg(timestamps: pd.DatetimeIndex, latitude: float) -> np.ndarray:
-    doy = timestamps.dayofyear.values.astype(float)
-    hour = (timestamps.hour + timestamps.minute / 60.0).values.astype(float)
-
-    decl = 23.45 * np.sin(np.deg2rad(360.0 / 365.0 * (doy - 81.0)))
-    hour_angle = 15.0 * (hour - 12.0)
-
-    lat_rad = np.deg2rad(latitude)
-    decl_rad = np.deg2rad(decl)
-    ha_rad = np.deg2rad(hour_angle)
-
-    sin_elev = (
-        np.sin(lat_rad) * np.sin(decl_rad)
-        + np.cos(lat_rad) * np.cos(decl_rad) * np.cos(ha_rad)
-    )
-    elevation = np.rad2deg(np.arcsin(np.clip(sin_elev, -1.0, 1.0)))
-    return elevation
-
-
-def _clear_sky_ghi(elevation_deg: np.ndarray, solar_constant: float = 1361.0) -> np.ndarray:
-    elev_clipped = np.clip(elevation_deg, 0.0, 90.0)
-    air_mass = 1.0 / np.clip(np.sin(np.deg2rad(elev_clipped + 0.001)), 1e-3, None)
-    transmittance = 0.75 ** (air_mass ** 0.678)
-    ghi = solar_constant * np.sin(np.deg2rad(elev_clipped)) * transmittance
-    ghi = np.where(elevation_deg > 0, ghi, 0.0)
-    return np.clip(ghi, 0.0, None)
+# Solar geometry lives in src/utils/solar.py; these aliases keep the old
+# import path (`from src.phase1.download_pv import _clear_sky_ghi`) working.
+_solar_elevation_deg = solar_elevation_deg
+_clear_sky_ghi = clear_sky_ghi
 
 HF_REPO_ID = "openclimatefix/uk_pv"
 HF_REPO_TYPE = "dataset"
@@ -146,6 +127,10 @@ def _load_generation(gen_path: str) -> pd.DataFrame:
             rename_map[c] = "timestamp"
         elif "power" in cl or "generation" in cl:
             rename_map[c] = "pv_power_kw"
+            # uk_pv 30_minutely reports `generation_wh`: energy over the
+            # half-hour, not power. Mean power in kW = Wh * 2 / 1000.
+            if cl.endswith("_wh"):
+                df[c] = df[c] * 2.0 / 1000.0
     df = df.rename(columns=rename_map)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     return df
@@ -211,15 +196,19 @@ def build_real_pv_series() -> pd.DataFrame:
         raise RuntimeError(f"Selected site_id={target_site_id} has no rows in the requested date range.")
 
     site_meta = meta_df.loc[meta_df["site_id"] == target_site_id].iloc[0]
-    elevation = _solar_elevation_deg(pd.DatetimeIndex(df["timestamp"]), float(site_meta["latitude"]))
-    df["solar_elevation_deg"] = elevation
+    df["solar_elevation_deg"] = solar_elevation_deg(
+        pd.DatetimeIndex(df["timestamp"]) - pd.Timedelta(minutes=15),
+        float(site_meta["latitude"]), float(site_meta["longitude"]),
+    )
+    df["capacity_kw"] = float(site_meta["capacity_kw"])
 
     resolved = {
         "site_id": int(target_site_id),
         "latitude": float(site_meta["latitude"]),
         "longitude": float(site_meta["longitude"]),
         "capacity_kw": float(site_meta["capacity_kw"]),
-        "source": HF_REPO_ID,
+        "source": "uk_pv_era5",
+        "dataset": HF_REPO_ID,
         "date_range": [START_DATE, END_DATE],
     }
     save_json(resolved, RAW_METADATA_DIR / "resolved_site_metadata.json")
@@ -231,8 +220,39 @@ def build_real_pv_series() -> pd.DataFrame:
     return df
 
 
+def build_pvlive_series() -> pd.DataFrame:
+    from src.phase1.pvlive_openmeteo import fetch_pvlive
+    from src.phase1.regions import get_region
+
+    region = get_region(PVLIVE_REGION_ID)
+    end = pd.Timestamp(SOURCE_END) + pd.Timedelta(days=1)  # include the whole last day
+    df = fetch_pvlive(region, SOURCE_START, end)
+    df = df[df["timestamp"] <= pd.Timestamp(end, tz="UTC")].reset_index(drop=True)
+
+    resolved = {
+        "source": "pvlive_openmeteo",
+        "region_id": region.region_id,
+        "region_name": region.name,
+        "latitude": region.latitude,
+        "longitude": region.longitude,
+        "weather_points": [list(p) for p in region.points],
+        "capacity_kw": float(df["capacity_kw"].iloc[-1]),
+        "date_range": [SOURCE_START, SOURCE_END],
+    }
+    save_json(resolved, RAW_METADATA_DIR / "resolved_site_metadata.json")
+    logger.info(f"PV_Live region {region.region_id} ({region.name}): {len(df)} half-hours, "
+                f"{int(df['pv_power_kw'].isna().sum())} missing, capacity "
+                f"{df['capacity_kw'].iloc[0] / 1000:.0f} -> {df['capacity_kw'].iloc[-1] / 1000:.0f} MWp.")
+    return df
+
+
 def main():
-    df = build_real_pv_series()
+    if DATA_SOURCE == "pvlive_openmeteo":
+        df = build_pvlive_series()
+    elif DATA_SOURCE == "uk_pv_era5":
+        df = build_real_pv_series()
+    else:
+        raise ValueError(f"Unknown DATA_SOURCE '{DATA_SOURCE}' in config/data_source.py.")
     out_path = RAW_PV_DIR / "pv_raw.parquet"
     save_parquet(df, out_path)
     logger.info(f"Saved raw PV data -> {out_path} ({len(df)} rows).")

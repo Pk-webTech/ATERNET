@@ -1,5 +1,10 @@
 """
-Phase 1 -- NWP ensemble data acquisition (REAL DATA: ECMWF ERA5 via CDS).
+Phase 1 -- NWP ensemble data acquisition.
+
+Dispatches on config/data_source.py: "pvlive_openmeteo" (default) uses
+Open-Meteo multi-model forecasts as the ensemble -- see
+src/phase1/pvlive_openmeteo.py. "uk_pv_era5" uses ERA5 EDA via CDS,
+documented below.
 
 Replaces the synthetic ensemble generator with actual ERA5 data pulled
 from the Copernicus Climate Data Store (`cdsapi`), for the 6 variables
@@ -43,8 +48,8 @@ import zipfile
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 
+from config.data_source import DATA_SOURCE
 from config.paths import RAW_NWP_DIR, RAW_PV_DIR, CACHE_DIR
 from src.utils.logger import get_logger
 from src.utils.io import save_parquet, load_parquet
@@ -149,6 +154,8 @@ def _reshape_to_long_format(nc_dir: Path, latitude: float, longitude: float) -> 
     (time, number, [lat/lon already collapsed]) cube into the long
     (timestamp, ensemble_member, var...) format nwp_processor.py expects.
     """
+    import xarray as xr
+
     # CDS returns multiple NetCDF files in a ZIP when mixing instantaneous 
     # and accumulated variables. Load them all and merge into one dataset.
     datasets = []
@@ -220,6 +227,19 @@ def _resample_to_pv_grid(nwp_long: pd.DataFrame, pv_timestamps: pd.DatetimeIndex
     return pd.concat(out, ignore_index=True)
 
 
+def _build_openmeteo_ensemble(pv_timestamps: pd.DatetimeIndex) -> pd.DataFrame:
+    from config.data_source import PVLIVE_REGION_ID
+    from src.phase1.pvlive_openmeteo import fetch_weather, weather_to_pv_grid
+    from src.phase1.regions import get_region
+
+    region = get_region(PVLIVE_REGION_ID)
+    # One extra day either side so interpolation has neighbours at the ends.
+    start = pv_timestamps.min() - pd.Timedelta(days=1)
+    end = pv_timestamps.max() + pd.Timedelta(days=1)
+    hourly = fetch_weather(region, start, end, live=False)
+    return weather_to_pv_grid(hourly, pv_timestamps)
+
+
 def main():
     pv_raw_path = RAW_PV_DIR / "pv_raw.parquet"
     if not pv_raw_path.exists():
@@ -230,10 +250,13 @@ def main():
     pv_df = load_parquet(pv_raw_path)
     pv_timestamps = pd.DatetimeIndex(pd.to_datetime(pv_df["timestamp"]).unique()).sort_values()
 
-    latitude, longitude = _nearest_site_latlon()
-    nc_dir = _fetch_era5_raw(START_DATE, END_DATE)
-    nwp_long = _reshape_to_long_format(nc_dir, latitude, longitude)
-    nwp_resampled = _resample_to_pv_grid(nwp_long, pv_timestamps)
+    if DATA_SOURCE == "pvlive_openmeteo":
+        nwp_resampled = _build_openmeteo_ensemble(pv_timestamps)
+    else:
+        latitude, longitude = _nearest_site_latlon()
+        nc_dir = _fetch_era5_raw(START_DATE, END_DATE)
+        nwp_long = _reshape_to_long_format(nc_dir, latitude, longitude)
+        nwp_resampled = _resample_to_pv_grid(nwp_long, pv_timestamps)
 
     out_path = RAW_NWP_DIR / "nwp_ensemble.parquet"
     save_parquet(nwp_resampled, out_path)

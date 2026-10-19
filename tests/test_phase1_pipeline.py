@@ -21,7 +21,7 @@ def test_split_shapes_consistent():
         n = d["y"].shape[0]
         assert d["X_seq"].shape == (n, 48, len(SEQUENCE_FEATURES))
         assert d["X_sigma"].shape == (n, 48, len(SIGMA_FEATURES))
-        assert d["X_nwp"].shape == (n, 48, len(NWP_FEATURES))
+        assert d["X_nwp"].shape == (n, 48 + 16, len(NWP_FEATURES))
         assert d["y"].shape == (n, 16)
 
 

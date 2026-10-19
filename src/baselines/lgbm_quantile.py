@@ -36,13 +36,16 @@ QUANTILES = [0.1, 0.5, 0.9]
 def _flatten_features(ds: ATERNETDataset) -> np.ndarray:
     """
     Flatten each window into a single feature vector.
-    Uses last-step sequence + last-step sigma + last-step nwp + meta.
+    Uses last-step sequence + last-step sigma + issue-time nwp + the
+    full forecast-horizon nwp + meta.
     """
-    x_seq_last = ds.x_seq[:, -1, :].numpy()       # (N, 10)
-    x_sigma_last = ds.x_sigma[:, -1, :].numpy()    # (N, 6)
-    x_nwp_last = ds.x_nwp[:, -1, :].numpy()        # (N, 4)
-    meta = ds.meta.numpy()                          # (N, 9)
-    return np.hstack([x_seq_last, x_sigma_last, x_nwp_last, meta])
+    T = ds.x_seq.shape[1]
+    x_seq_last = ds.x_seq[:, -1, :].numpy()             # (N, 10)
+    x_sigma_last = ds.x_sigma[:, -1, :].numpy()          # (N, 6)
+    x_nwp_issue = ds.x_nwp[:, T - 1, :].numpy()          # (N, 4)
+    x_nwp_future = ds.x_nwp[:, T:, :].flatten(1).numpy() # (N, horizon * 4)
+    meta = ds.meta.numpy()                                # (N, 9)
+    return np.hstack([x_seq_last, x_sigma_last, x_nwp_issue, x_nwp_future, meta])
 
 
 def train_and_evaluate():

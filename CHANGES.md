@@ -1,5 +1,43 @@
 # Changes
 
+## Real-world data + live forecasting
+
+### Fixes
+1. **uk_pv units / capacity were wrong** (`download_pv.py`, `pv_processor.py`).
+   uk_pv reports `generation_wh` (energy per half-hour), but it was treated as
+   kW and divided by the 1000 kW placeholder capacity of the demo Chennai site
+   instead of the real system's 3.36 kWp. Peaks were clipped to 1.0. Now
+   converted Wh -> kW and normalized by the actual capacity. A per-row
+   `capacity_kw` column takes priority, because regional capacity grows over
+   time (Yorkshire: 704 -> 1165 MWp over 2023-2026).
+2. **The model never saw the weather forecast for the hours it predicts**
+   (`create_windows.py`). `X_nwp` covered only the lookback. It now spans
+   lookback + horizon (48 + 16 steps). Measured-PV features still stop at the
+   issue time, so there is no target leakage. The LSTM / LightGBM baselines
+   were adapted to the longer `X_nwp`.
+3. **Solar elevation ignored longitude and the equation of time**. Correct
+   near Greenwich, ~5 h off for India. Moved to `src/utils/solar.py` (NOAA formulation).
+
+### Added
+- `config/data_source.py`, `src/phase1/pvlive_openmeteo.py`, `src/phase1/regions.py`:
+  measured regional PV from Sheffield Solar PV_Live + 5-model Open-Meteo
+  weather ensemble. Free, no API keys, historical and live. Now the default source.
+- `src/inference/forecaster.py`, `predict.py`: `live` forecast and
+  out-of-sample `backtest` through one shared raw-data -> forecast code path.
+- "Live Forecast" page in `app.py`.
+- `tests/test_realtime_sources.py` (5 offline tests). The integration fixture
+  now samples its 1024 windows across the whole training period. On multi-year
+  data the first 1024 windows are one winter, which trained a zero-predictor.
+
+### Results (real data)
+Test split: nRMSE 4.24%, R² 0.951, PICP 0.800. Out-of-sample backtest
+(1-16 Oct 2026): daylight MAE 50 MW vs 146 MW for day-ahead persistence.
+Previous uk_pv/ERA5 artifacts were moved to `archive/uk_pv_era5_2019/`.
+
+---
+
+## Earlier pass
+
 Everything added and fixed in this pass, in severity order. Written so it can
 be split into separate commits if you'd rather have a granular history — each
 numbered fix is self-contained and touches the files listed.
