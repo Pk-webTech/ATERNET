@@ -42,16 +42,16 @@ MODELS = {
 }
 
 
-def _run(name, seed, epochs):
+def _run(name, seed, epochs, out_dir=OUT_DIR, ckpt_root=CKPT_DIR):
     module_name, fname, takes_epochs = MODELS[name]
-    run_dir = OUT_DIR / f"seed{seed}"
+    run_dir = out_dir / f"seed{seed}"
     result_path = run_dir / fname
     if result_path.exists():
         logger.info(f"[skip] {name} seed {seed} already done")
         return load_json(result_path)
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir = CKPT_DIR / f"seed{seed}"
+    ckpt_dir = ckpt_root / f"seed{seed}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     mod = importlib.import_module(module_name)
@@ -98,19 +98,28 @@ def main():
     p.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--models", nargs="+", default=list(MODELS), choices=list(MODELS))
+    p.add_argument("--tag", default="",
+                   help="Suffix for output directories/report (e.g. 'stride2') so runs on a "
+                        "different dataset don't reuse or overwrite existing results.")
     args = p.parse_args()
+
+    suffix = f"_{args.tag}" if args.tag else ""
+    out_dir = OUT_DIR.with_name(OUT_DIR.name + suffix)
+    ckpt_root = CKPT_DIR.with_name(CKPT_DIR.name + suffix)
+    report_path = REPORTS_DIR / f"multiseed_baselines{suffix}.md"
 
     per_model = {m: [] for m in args.models}
     for seed in args.seeds:
         for m in args.models:
             try:
-                per_model[m].append(_run(m, seed, args.epochs))
+                per_model[m].append(_run(m, seed, args.epochs, out_dir, ckpt_root))
             except Exception as e:
                 logger.error(f"{m} seed {seed} failed: {e}")
 
     per_model = {m: r for m, r in per_model.items() if r}
     summary = _summarise(per_model)
-    save_json(summary, OUT_DIR / "summary.json")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_json(summary, out_dir / "summary.json")
 
     lines = [f"# Multi-seed baselines (seeds: {', '.join(map(str, args.seeds))})", "",
              "| Model | n | nRMSE % | nMAE % | R² | PICP | PINAW | Winkler |",
@@ -119,8 +128,8 @@ def main():
         cells = [f"{row[k]['mean']:.4f} ± {row[k]['std']:.4f}" if k in row else "—"
                  for k in METRIC_KEYS]
         lines.append(f"| {name} | {row['n_seeds']} | " + " | ".join(cells) + " |")
-    (REPORTS_DIR / "multiseed_baselines.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    logger.info(f"Report -> {REPORTS_DIR / 'multiseed_baselines.md'}")
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    logger.info(f"Report -> {report_path}")
 
 
 if __name__ == "__main__":

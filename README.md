@@ -106,6 +106,20 @@ On the final architecture (`multiseed_ablation_final.md`, `multiseed_experts.md`
 - **No effect:** weight decay 1e-2, learning rate 5e-4, a P50 squared-error
   term, and routing-metadata inputs.
 
+- **Denser training windows (stride 2, 2× data) did not help ATERNET** but
+  did help LightGBM (seeds 42/43; validation and test sets unchanged,
+  built by `src/phase1/densify_train.py`):
+
+  | | stride 4 | stride 2 |
+  |---|---|---|
+  | ATERNET nRMSE | 3.69, 3.68 | 3.75, 3.72 |
+  | LightGBM nRMSE | 3.71, 3.72 | 3.68, 3.68 |
+
+  So ATERNET's tie with LightGBM on accuracy holds only at the original data
+  density; with more windows LightGBM pulls ahead on accuracy (ATERNET still
+  has the sharper intervals). The schedule was not retuned for the larger set,
+  so this is not proof that ATERNET cannot use more data.
+
 Live forecasting (`predict.py`, `app.py`) works with the main checkpoint;
 checkpoints trained with metadata inputs (`n_meta_features > 0`) are not
 supported by the live forecaster.

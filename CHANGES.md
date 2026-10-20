@@ -14,6 +14,8 @@ All new options are opt-in and off by default; older checkpoints load unchanged.
   never actually disabled the dense expert loss (it set an attribute nothing read).
 
 ### Added
+- `src/phase1/densify_train.py`, `ATERNET_PROCESSED_DIR`, `--tag` on the multi-seed scripts: stride-2
+  training set experiment with unchanged val/test splits (negative result for ATERNET, see README).
 - `residual_gate` (`GatingNetwork`, `AdaptiveRouter`, `ATERNET`): softmax(delta * logits / T)
   with delta initialised to 0, so routing starts uniform.
 - `last_step_skip` (`ATERNET`): zero-initialised linear shortcut from the last

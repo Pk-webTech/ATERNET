@@ -4,6 +4,7 @@ Every other module imports paths from here so that directory
 locations only ever need to change in one place.
 """
 
+import os
 from pathlib import Path
 
 # Project root = two levels up from this file (config/paths.py -> ATERNET/)
@@ -17,7 +18,9 @@ RAW_NWP_DIR = RAW_DIR / "nwp"
 RAW_METADATA_DIR = RAW_DIR / "metadata"
 
 INTERIM_DIR = DATA_DIR / "interim"
-PROCESSED_DIR = DATA_DIR / "processed"
+# ATERNET_PROCESSED_DIR lets an experiment read an alternative processed
+# dataset (e.g. data/processed_stride2) without touching the default one.
+PROCESSED_DIR = Path(os.environ.get("ATERNET_PROCESSED_DIR", DATA_DIR / "processed"))
 CACHE_DIR = DATA_DIR / "cache"
 
 # ---- Model / experiment artifacts ----

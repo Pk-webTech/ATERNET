@@ -42,6 +42,9 @@ def parse_args():
                    help="Run every variant on top of the final architecture "
                         "(residual gate + last-step skip). Results go to "
                         "multiseed_final/ and multiseed_ablation_final.md.")
+    p.add_argument("--tag", default="",
+                   help="Suffix for the output directories/report (e.g. 'stride2'), so a run "
+                        "on a different dataset doesn't reuse or overwrite existing results.")
     p.add_argument("--report-name", default=None,
                    help="Report filename under outputs/reports/ (default depends on "
                         "--final-arch). Use it so a partial variant list doesn't "
@@ -93,14 +96,17 @@ def main():
     args = parse_args()
     per_variant = {v: [] for v in args.variants}
 
+    suffix = f"_{args.tag}" if args.tag else ""
     if args.final_arch:
-        metrics_root = METRICS_DIR / "multiseed_final"
-        ckpt_root = CHECKPOINTS_DIR / "multiseed_final"
+        metrics_root = METRICS_DIR / f"multiseed_final{suffix}"
+        ckpt_root = CHECKPOINTS_DIR / f"multiseed_final{suffix}"
         base_kwargs = {"residual_gate": True, "last_step_skip": True}
-        report_name = "multiseed_ablation_final.md"
+        report_name = f"multiseed_ablation_final{suffix}.md"
     else:
-        metrics_root, ckpt_root, base_kwargs = MULTISEED_METRICS_DIR, MULTISEED_CKPT_DIR, None
-        report_name = "multiseed_ablation.md"
+        metrics_root = MULTISEED_METRICS_DIR.with_name(MULTISEED_METRICS_DIR.name + suffix)
+        ckpt_root = MULTISEED_CKPT_DIR.with_name(MULTISEED_CKPT_DIR.name + suffix)
+        base_kwargs = None
+        report_name = f"multiseed_ablation{suffix}.md"
 
     for seed in args.seeds:
         for variant in args.variants:
