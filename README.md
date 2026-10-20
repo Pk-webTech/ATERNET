@@ -45,34 +45,69 @@ still available as `DATA_SOURCE = "uk_pv_era5"`, but it has no live feed.
 
 ### Held-out test split (Mar → Sep 2026, 2,462 windows, measured PV_Live output)
 
+Main model: residual gate + last-step shortcut + EMA weight averaging
+(`python -m src.training.train --residual-gate --last-step-skip --ema-decay 0.999`),
+seed 42, after per-regime conformal calibration.
+
 | Metric | Value |
 |---|---|
-| nRMSE (% of capacity) | **4.24** |
-| nMAE (% of capacity) | **2.23** |
-| R² | **0.951** |
-| PICP (nominal 0.80) | **0.800** |
-| PINAW (mean interval width) | 0.053 |
-| Winkler score | 0.104 |
-| RMSE skill vs persistence | **0.812** |
+| nRMSE (% of capacity) | **3.69** |
+| nMAE (% of capacity) | **2.00** |
+| R² | **0.963** |
+| PICP (nominal 0.80) | **0.804** |
+| PINAW (mean interval width) | 0.0486 |
+| Winkler score | 0.0929 |
+| RMSE skill vs persistence | **0.836** |
 | Quantile-crossing violations | **0** |
 
-Per-regime coverage: overcast 0.820, dawn_ramp 0.812, clear_peak 0.755,
-volatile 0.745. Full numbers: `outputs/reports/evaluation_report.md`.
+Per-regime coverage: overcast 0.824, dawn_ramp 0.821, volatile 0.752,
+clear_peak 0.748. The intervals are still too narrow in clear_peak and
+volatile conditions; conformal calibration barely moves them. Full numbers:
+`outputs/reports/evaluation_report.md`.
 
-Baselines on the same split, all given the same inputs including
-forecast-horizon weather:
+### Multi-seed comparison (seeds 42–44, mean ± std)
 
-| Model | nRMSE % | PICP | Winkler |
-|---|---|---|---|
-| **LightGBM quantile** | **3.71** | 0.820 | 0.101 |
-| PatchTST quantile | 4.21 | 0.888 | **0.097** |
-| ATERNET | 4.24 | **0.800** | 0.104 |
-| LSTM quantile | 6.96 | 0.844 | 0.100 |
+Single-seed comparisons were misleading on this data (one LSTM seed gave
+nRMSE 9.19 where others gave 3.7), so the headline numbers are multi-seed.
 
-On real data, ATERNET does **not** beat a well-fed gradient-boosting
-baseline on point accuracy. Its advantage is calibration: PICP lands on the
-0.80 nominal while the other models over-cover. Treat the expert-routing
-claim as unproven until it beats LightGBM.
+| Model | nRMSE % | PICP | PINAW | Winkler |
+|---|---|---|---|---|
+| **ATERNET (EMA)** | **3.70 ± 0.02** | 0.809 | **0.0496** | **0.0922** |
+| ATERNET (EMA), 3-model ensemble | 3.68 | 0.813 | 0.0496 | 0.0914 |
+| LightGBM quantile | 3.72 ± 0.01 | 0.814 | 0.0644 | 0.0992 |
+| PatchTST quantile | 4.16 ± 0.00 | 0.880 | 0.0737 | 0.0971 |
+| LSTM quantile | unstable: 3 of 6 seeds failed (7.0–9.2); the other 3 reached 3.63–3.76 (Winkler 0.086–0.093) | | | |
+
+ATERNET ties LightGBM on point accuracy (the 0.02 gap is about one seed
+spread) and has the sharpest intervals and the best Winkler score of the
+stable models. A well-trained LSTM seed matches or beats it, but the LSTM
+cannot be trusted without seed selection; ATERNET's seed spread is 0.02.
+`outputs/reports/comparison_table.md` still shows seed-42 baseline rows
+(including the failed LSTM run) and ablation rows from an older gate; use
+`python build_final_table.py` (-> `outputs/reports/final_comparison.md`) instead.
+
+### Ablations (3 seeds each; reports in `outputs/reports/`)
+
+On the final architecture (`multiseed_ablation_final.md`, `multiseed_experts.md`,
+`multiseed_accuracy.md`):
+
+- **Dense expert loss matters.** Removing it: nRMSE 3.83 → 3.94, coverage
+  0.82 → 0.78, Winkler 0.097 → 0.105.
+- **Everything else is within seed noise:** no gate, fixed temperature, fixed
+  interval width, σ_NWP-only, σ_expert-only, a single expert instead of four,
+  and no regime weighting. On this data the adaptive routing, the
+  σ-conditioned width, and regime specialisation do **not** measurably
+  improve accuracy; the experts behave like a small ensemble.
+- **The original learned gate hurt:** nRMSE 4.39 ± 0.20 vs 4.12 with a plain
+  average (`multiseed_ablation.md`). The residual gate (starts at uniform
+  routing) removes that harm; the last-step linear shortcut then took it from
+  4.12 to 3.83, and EMA weight averaging to 3.70.
+- **No effect:** weight decay 1e-2, learning rate 5e-4, a P50 squared-error
+  term, and routing-metadata inputs.
+
+Live forecasting (`predict.py`, `app.py`) works with the main checkpoint;
+checkpoints trained with metadata inputs (`n_meta_features > 0`) are not
+supported by the live forecaster.
 
 ### Out-of-sample backtest through the live pipeline (1–16 Oct 2026)
 
@@ -83,10 +118,13 @@ against what PV_Live measured:
 | Metric | Value |
 |---|---|
 | Forecasts / half-hours scored | 96 / 1,536 |
-| nMAE / nRMSE (% of capacity) | 3.13 / 4.87 |
-| Daylight MAE | **50 MW** (mean output 269 MW; day-ahead persistence 146 MW) |
-| RMSE skill vs persistence | 0.646 |
-| PICP (nominal 0.80) | 0.757 |
+| nMAE / nRMSE (% of capacity) | 2.62 / 4.08 |
+| Daylight MAE | **42.2 MW** (mean output 272 MW; day-ahead persistence 147 MW) |
+| RMSE skill vs persistence | 0.704 |
+| PICP (nominal 0.80) | 0.749 |
+
+(Run with the current main checkpoint. The earlier model scored nMAE/nRMSE
+3.13 / 4.87, daylight MAE 50 MW, skill 0.646, PICP 0.757.)
 
 ![backtest](outputs/plots/backtest_2026-10-01_2026-10-16.png)
 
@@ -110,8 +148,8 @@ pip install -r requirements.txt
 # 2. Download real data + build the dataset (Phase 1, ~15 min first time)
 python run_pipeline.py
 
-# 3. Train (~10 min on CPU)
-python -m src.training.train --epochs 50 --batch-size 64
+# 3. Train (~10-15 min on CPU). Main configuration:
+python -m src.training.train --residual-gate --last-step-skip --ema-decay 0.999 --epochs 50 --batch-size 64
 
 # 4. Evaluate on the test split
 python -m src.evaluation.evaluate --split test
@@ -313,7 +351,7 @@ scatter, and the gate-by-regime matrix — plus NWP cross-attention maps to
 ## Tests
 
 ```bash
-python -m pytest tests/ -q     # 55 passed
+python -m pytest tests/ -q     # 64 passed
 ```
 
 | File | Covers |

@@ -1,5 +1,34 @@
 # Changes
 
+## Accuracy and ablation pass (Oct 2026)
+
+All new options are opt-in and off by default; older checkpoints load unchanged.
+
+### Fixed
+- `fixed_temp` ablation crashed (`logits_net` vs `logit_net`); `no_dense_expert`
+  never actually disabled the dense expert loss (it set an attribute nothing read).
+
+### Added
+- `residual_gate` (`GatingNetwork`, `AdaptiveRouter`, `ATERNET`): softmax(delta * logits / T)
+  with delta initialised to 0, so routing starts uniform.
+- `last_step_skip` (`ATERNET`): zero-initialised linear shortcut from the last
+  observed step and the forecast-horizon NWP to the routed forecast.
+- `n_meta_features` (shortcut also receives routing/volatility metadata),
+  `w_p50_mse` loss term, and EMA weight averaging (`TrainingConfig.ema_decay`, `--ema-decay`).
+- `run_multiseed.py`, `run_multiseed_baselines.py`: multi-seed ablations and
+  baselines written to separate directories (`multiseed*/`).
+- Ablation variants: `single_expert`, `no_regime_weights`, `full`, `residual_gate`,
+  `residual_gate_skip`, `tune_*`, `mse_p50`, `meta_skip`, `combo`.
+
+### Results
+Test nRMSE 4.24 -> 3.69, Winkler 0.104 -> 0.0929 (main model, seed 42). Over three
+seeds: 3.70 ± 0.02 (LightGBM 3.72 ± 0.01). See README "Results" for the
+ablation conclusions, including that gating/regime specialisation did not help.
+Previous artifacts are kept in `checkpoints/`, `outputs/metrics/`, `outputs/reports/`
+under `legacy_gate/`, `residual_gate_only/` and `final_no_ema/`.
+
+---
+
 ## Real-world data + live forecasting
 
 ### Fixes
