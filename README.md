@@ -54,16 +54,17 @@ seed 42, after per-regime conformal calibration.
 | nRMSE (% of capacity) | **3.69** |
 | nMAE (% of capacity) | **2.00** |
 | R² | **0.963** |
-| PICP (nominal 0.80) | **0.804** |
-| PINAW (mean interval width) | 0.0486 |
-| Winkler score | 0.0929 |
+| PICP (nominal 0.80) | **0.816** (0.804 before calibration) |
+| PINAW (mean interval width) | 0.0504 (0.0486 before) |
+| Winkler score | 0.0924 (0.0929 before) |
 | RMSE skill vs persistence | **0.836** |
 | Quantile-crossing violations | **0** |
 
-Per-regime coverage: overcast 0.824, dawn_ramp 0.821, volatile 0.752,
-clear_peak 0.748. The intervals are still too narrow in clear_peak and
-volatile conditions; conformal calibration barely moves them. Full numbers:
-`outputs/reports/evaluation_report.md`.
+Per-regime coverage after calibration: overcast 0.824, dawn_ramp 0.821,
+clear_peak 0.797, volatile 0.787 (before: clear_peak 0.748, volatile 0.752).
+The volatile adjustment is estimated from only 44 validation windows and
+the validation and test seasons differ (validation coverage was 0.88 before
+calibration, test 0.80), so treat the volatile figure as approximate. Full numbers: `outputs/reports/evaluation_report.md`.
 
 ### Multi-seed comparison (seeds 42–44, mean ± std)
 
@@ -351,7 +352,7 @@ scatter, and the gate-by-regime matrix — plus NWP cross-attention maps to
 ## Tests
 
 ```bash
-python -m pytest tests/ -q     # 64 passed
+python -m pytest tests/ -q     # 66 passed
 ```
 
 | File | Covers |

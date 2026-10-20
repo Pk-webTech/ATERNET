@@ -5,6 +5,11 @@
 All new options are opt-in and off by default; older checkpoints load unchanged.
 
 ### Fixed
+- **Conformal calibration did almost nothing** (`src/evaluation/conformal.py`). The score
+  averaged signed violations over the 16 horizon steps, giving adjustments of ~0 (and a
+  negative one for volatile, which shrank that interval). Scores are now per forecast step;
+  clear_peak coverage 0.748 -> 0.797, volatile 0.752 -> 0.787, aggregate PICP 0.804 -> 0.816,
+  Winkler 0.0929 -> 0.0924. The old behaviour is available as `score="window_mean"`.
 - `fixed_temp` ablation crashed (`logits_net` vs `logit_net`); `no_dense_expert`
   never actually disabled the dense expert loss (it set an attribute nothing read).
 

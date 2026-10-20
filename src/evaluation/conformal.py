@@ -7,8 +7,10 @@ scores, then adjust P10/P90 on the test set by the regime-specific
 quantile of those scores.
 
 After calibration, each regime's PICP should be close to the nominal
-0.80 rather than the current 0.736 (volatile) / 0.776 (dawn_ramp) /
-0.921 (overcast) spread.
+0.80. Scores are computed per forecast step (see `_conformity_scores`);
+note that a regime with few validation windows (volatile: 44) gives a
+noisy adjustment, and validation and test seasons differ, so exact
+nominal coverage is not guaranteed on the test split.
 
 Usage:
     python -m src.evaluation.conformal
@@ -33,18 +35,29 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _conformity_scores(y: np.ndarray, p10: np.ndarray, p90: np.ndarray) -> np.ndarray:
+def _conformity_scores(y: np.ndarray, p10: np.ndarray, p90: np.ndarray,
+                       score: str = "pointwise") -> np.ndarray:
     """
-    CQR conformity score per sample (scalar).
-    E(i) = max( p10(i) - y(i), y(i) - p90(i) )
-    averaged across horizon steps.
+    CQR conformity score, E = max( p10 - y, y - p90 ).
+
+    "pointwise" (default): one score per (window, horizon step), so the
+        calibrated quantile targets the same per-point coverage (PICP) that
+        is reported.
+    "window_mean": the original per-window average over steps. It averages
+        signed violations, and since most steps sit inside the interval
+        (negative values) the resulting adjustment is ~0 or even negative,
+        which left clear_peak under-covered and shrank the volatile
+        interval. Kept only to reproduce earlier results.
     """
-    lower_violation = (p10 - y).mean(axis=1)   # positive if p10 > y
-    upper_violation = (y - p90).mean(axis=1)    # positive if y > p90
-    return np.maximum(lower_violation, upper_violation)
+    if score == "pointwise":
+        return np.maximum(p10 - y, y - p90).ravel()
+    if score == "window_mean":
+        return np.maximum((p10 - y).mean(axis=1), (y - p90).mean(axis=1))
+    raise ValueError(f"Unknown score '{score}'.")
 
 
-def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH):
+def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
+              score: str = "pointwise"):
     """
     1. Run ATERNET on val and test.
     2. Compute per-regime conformity scores on val.
@@ -80,7 +93,8 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH):
             logger.warning(f"Regime {rname}: too few val samples ({mask.sum()}), no adjustment.")
             continue
 
-        scores = _conformity_scores(y_val[mask], val_preds["p10"][mask], val_preds["p90"][mask])
+        scores = _conformity_scores(y_val[mask], val_preds["p10"][mask],
+                                    val_preds["p90"][mask], score=score)
         n = len(scores)
         # CQR quantile level: ceil((n+1)(1-alpha)) / n
         q_level = min(np.ceil((n + 1) * (1 - alpha)) / n, 1.0)
