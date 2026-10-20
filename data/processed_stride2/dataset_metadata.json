@@ -1,0 +1,49 @@
+{
+  "n_windows_total": 16413,
+  "n_train": 22978,
+  "n_val": 2462,
+  "n_test": 2462,
+  "window_size": 48,
+  "horizon": 16,
+  "stride": 4,
+  "freq_minutes": 30,
+  "sequence_features": [
+    "pv_norm",
+    "ghi",
+    "cloud_cover",
+    "temp_c",
+    "wind_speed",
+    "clear_sky_index",
+    "hour_sin",
+    "hour_cos",
+    "doy_sin",
+    "doy_cos"
+  ],
+  "sigma_features": [
+    "sigma_nwp_ghi",
+    "sigma_nwp_cloud",
+    "sigma_nwp_temp",
+    "sigma_nwp_wind",
+    "sigma_expert_placeholder",
+    "ensemble_spread_norm"
+  ],
+  "nwp_features": [
+    "nwp_ghi_mean",
+    "nwp_cloud_cover_mean",
+    "nwp_temp_c_mean",
+    "nwp_wind_speed_mean"
+  ],
+  "routing_metadata_features": [
+    "regime_id",
+    "regime_dawn_ramp",
+    "regime_clear_peak",
+    "regime_overcast",
+    "regime_volatile",
+    "ramp_rate_std",
+    "rolling_std_1h",
+    "rolling_std_3h",
+    "clear_sky_index_std"
+  ],
+  "seed": 42,
+  "stride_train": 2
+}
