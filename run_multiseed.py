@@ -42,6 +42,10 @@ def parse_args():
                    help="Run every variant on top of the final architecture "
                         "(residual gate + last-step skip). Results go to "
                         "multiseed_final/ and multiseed_ablation_final.md.")
+    p.add_argument("--report-name", default=None,
+                   help="Report filename under outputs/reports/ (default depends on "
+                        "--final-arch). Use it so a partial variant list doesn't "
+                        "overwrite the full report.")
     return p.parse_args()
 
 
@@ -109,7 +113,7 @@ def main():
     per_variant = {v: r for v, r in per_variant.items() if r}
     summary = _summarise(per_variant)
     save_json(summary, metrics_root / "summary.json")
-    report_path = REPORTS_DIR / report_name
+    report_path = REPORTS_DIR / (args.report_name or report_name)
     _write_report(summary, args.seeds, report_path)
     logger.info(f"Summary -> {metrics_root / 'summary.json'}")
     logger.info(f"Report  -> {report_path}")

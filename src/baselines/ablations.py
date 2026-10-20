@@ -54,7 +54,22 @@ ABLATION_NAMES = [
     "sigma_nwp_only", "sigma_exp_only", "no_dense_expert",
 ]
 # Runnable via run_ablation but not part of the run_all() ablation set.
-EXTRA_VARIANTS = ["full", "residual_gate", "residual_gate_skip"]
+EXTRA_VARIANTS = ["full", "residual_gate", "residual_gate_skip",
+                  "single_expert", "no_regime_weights"]
+
+# Accuracy-improvement variants: each is the final architecture plus opt-in
+# model kwargs ("model") and TrainingConfig overrides ("cfg"). The string
+# "auto" for n_meta_features is replaced by the dataset's meta width.
+TUNE_VARIANTS = {
+    "tune_ema":  {"cfg": {"ema_decay": 0.999}},
+    "tune_wd":   {"cfg": {"weight_decay": 1e-2}},
+    "tune_lr":   {"cfg": {"lr": 5e-4}},
+    "mse_p50":   {"cfg": {"w_p50_mse": 5.0}},
+    "meta_skip": {"model": {"n_meta_features": "auto"}},
+    "combo":     {"model": {"n_meta_features": "auto"},
+                  "cfg": {"ema_decay": 0.999, "weight_decay": 1e-2, "w_p50_mse": 5.0}},
+}
+EXTRA_VARIANTS += list(TUNE_VARIANTS)
 
 
 def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
@@ -97,7 +112,40 @@ def _patch_model(model: ATERNET, ablation: str) -> ATERNET:
 
         model.router.gate.forward = fixed_temp_gate
 
-    elif ablation in ("full", "residual_gate", "residual_gate_skip"):
+    elif ablation == "single_expert":
+        # Collapse the pool to ONE expert (the overcast one: it covers the
+        # most data, so this is the strongest single-expert case). Every
+        # pool slot returns that expert's forecast, so the gate and the
+        # average are no-ops, sigma_expert is 0, and only that expert gets a
+        # loss (at the same per-expert weight it has in the full model).
+        pool = model.expert_pool
+        keep = "overcast"
+        original_pool_forward = pool.forward
+
+        def single_forward(h_expert):
+            out = original_pool_forward(h_expert)
+            pred = out["predictions"][keep]
+            n = len(out["predictions"])
+            return {
+                "predictions": {name: pred for name in out["predictions"]},
+                "stacked": pred.unsqueeze(1).expand(-1, n, -1),
+                "sigma_expert": torch.zeros_like(out["sigma_expert"]),
+            }
+
+        def single_loss(h_expert, y_true, aux_weight=0.1, sample_weights=None, out=None):
+            if out is None:
+                out = pool.forward(h_expert)
+            loss = pool.experts[keep].total_loss(
+                out["predictions"][keep], y_true, aux_weight, sample_weight=None)
+            per_expert = {name: (loss if name == keep else loss.detach())
+                          for name in out["predictions"]}
+            return {"total": loss, "per_expert": per_expert, **out}
+
+        pool.forward = single_forward
+        pool.compute_loss = single_loss
+
+    elif ablation in ("full", "no_regime_weights", "residual_gate", "residual_gate_skip",
+                      *TUNE_VARIANTS):
         pass  # no patching; these are constructor flags (see run_ablation)
 
     elif ablation == "fixed_width":
@@ -198,6 +246,9 @@ def run_ablation(ablation: str, epochs: int = 50, seed: int = 42,
     # base_model_kwargs lets an ablation run on top of a non-default
     # architecture (e.g. the final residual-gate + skip model).
     model_kwargs.update(base_model_kwargs or {})
+    spec = TUNE_VARIANTS.get(ablation, {})
+    for k, v in spec.get("model", {}).items():
+        model_kwargs[k] = train_ds.n_meta_features if v == "auto" else v
     if ablation in ("residual_gate", "residual_gate_skip"):
         model_kwargs["residual_gate"] = True
     if ablation == "residual_gate_skip":
@@ -207,6 +258,8 @@ def run_ablation(ablation: str, epochs: int = 50, seed: int = 42,
 
     cfg = TrainingConfig()
     cfg.epochs = epochs
+    for k, v in spec.get("cfg", {}).items():
+        setattr(cfg, k, v)
 
     ckpt_best = checkpoints_dir / f"ablation_{ablation}_best.pt"
     ckpt_last = checkpoints_dir / f"ablation_{ablation}_last.pt"
@@ -214,7 +267,7 @@ def run_ablation(ablation: str, epochs: int = 50, seed: int = 42,
 
     # Regime weights only act through the dense expert loss, so they go
     # with it for no_dense_expert.
-    use_regime_weights = (ablation != "no_dense_expert")
+    use_regime_weights = ablation not in ("no_dense_expert", "no_regime_weights", "single_expert")
 
     trainer = Trainer(
         model, train_loader, val_loader, device=device, cfg=cfg,
