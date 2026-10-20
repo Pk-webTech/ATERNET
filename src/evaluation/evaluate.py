@@ -50,6 +50,7 @@ def predict(model, dataset, device, batch_size: int = 256) -> dict:
             dataset.x_seq[sl].to(device),
             dataset.x_nwp[sl].to(device),
             dataset.x_sigma[sl].to(device),
+            meta=(dataset.meta_feats[sl].to(device) if model.n_meta_features else None),
         )
         for k in keys:
             acc[k].append(out[k].detach().cpu().numpy())

@@ -25,7 +25,8 @@ class ATERNET(nn.Module):
                  h_nwp_dim: int = EMBEDDING_CONFIG.h_nwp_dim,
                  n_experts: int = EXPERT_CONFIG.n_experts,
                  residual_gate: bool = False,
-                 last_step_skip: bool = False):
+                 last_step_skip: bool = False,
+                 n_meta_features: int = 0):
         super().__init__()
         self.backbone = TemporalBackbone(
             n_seq_features=n_seq_features,
@@ -45,14 +46,21 @@ class ATERNET(nn.Module):
         # step and the forecast-horizon NWP to the routed forecast. The deep
         # path then only has to learn the nonlinear correction on top of a
         # linear nowcast. Zero init => identical to the plain model at step 0.
+        # n_meta_features > 0 additionally feeds the routing/volatility
+        # metadata (ramp rate, rolling std, ...) into that shortcut -- the
+        # same signals the LightGBM baseline gets as direct inputs.
+        if n_meta_features and not last_step_skip:
+            raise ValueError("n_meta_features requires last_step_skip=True.")
+        self.n_meta_features = n_meta_features
         self.last_step_skip = None
         if last_step_skip:
-            self.last_step_skip = nn.Linear(n_seq_features + horizon * n_nwp_features, horizon)
+            self.last_step_skip = nn.Linear(
+                n_seq_features + horizon * n_nwp_features + n_meta_features, horizon)
             nn.init.zeros_(self.last_step_skip.weight)
             nn.init.zeros_(self.last_step_skip.bias)
 
     def forward(self, x_seq: torch.Tensor, x_nwp: torch.Tensor, x_sigma: torch.Tensor,
-                return_attention: bool = False) -> dict:
+                return_attention: bool = False, meta: torch.Tensor = None) -> dict:
         emb = self.backbone(x_seq, x_nwp, x_sigma, return_attention=return_attention)
         pool_out = self.expert_pool(emb["h_expert"])
         router_out = self.router(
@@ -62,7 +70,13 @@ class ATERNET(nn.Module):
         y_hat_routed = router_out["y_hat_routed"]
         if self.last_step_skip is not None:
             window = x_seq.shape[1]
-            skip_in = torch.cat([x_seq[:, -1, :], x_nwp[:, window:, :].flatten(1)], dim=1)
+            parts = [x_seq[:, -1, :], x_nwp[:, window:, :].flatten(1)]
+            if self.n_meta_features:
+                if meta is None:
+                    raise ValueError("This model was built with n_meta_features>0; "
+                                     "pass meta=<(B, n_meta_features) tensor>.")
+                parts.append(meta)
+            skip_in = torch.cat(parts, dim=1)
             y_hat_routed = y_hat_routed + self.last_step_skip(skip_in)
 
         quantiles = self.decoder(

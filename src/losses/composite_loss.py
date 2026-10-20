@@ -95,6 +95,9 @@ def compute_composite_loss(
         + w_exp * expert_losses["total"]
         + cfg.w_load_balance * balance
     )
+    if getattr(cfg, "w_p50_mse", 0.0):
+        p50_mse = torch.mean((model_out["p50"] - y_true) ** 2)
+        total = total + cfg.w_p50_mse * p50_mse
 
     components = {
         "loss_total": float(total.detach()),

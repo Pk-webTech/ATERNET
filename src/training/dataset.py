@@ -43,6 +43,10 @@ class ATERNETDataset(Dataset):
         self.y = torch.from_numpy(np.ascontiguousarray(data["y"], dtype=np.float32))
         self.meta = torch.from_numpy(np.ascontiguousarray(data["meta"], dtype=np.float32))
         self.regime_id = self.meta[:, REGIME_ID_INDEX].long()
+        # Routing metadata minus the integer regime id (one-hot regime +
+        # volatility stats): usable as numeric model input when opted in.
+        keep = [i for i in range(self.meta.shape[1]) if i != REGIME_ID_INDEX]
+        self.meta_feats = self.meta[:, keep]
         self.window_start_time = data["window_start_time"]
 
         if not torch.isfinite(self.x_seq).all():
@@ -60,7 +64,12 @@ class ATERNETDataset(Dataset):
             "x_sigma": self.x_sigma[i],
             "y": self.y[i],
             "regime_id": self.regime_id[i],
+            "meta_feats": self.meta_feats[i],
         }
+
+    @property
+    def n_meta_features(self) -> int:
+        return self.meta_feats.shape[-1]
 
     @property
     def n_seq_features(self) -> int:

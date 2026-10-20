@@ -31,6 +31,9 @@ def parse_args():
                    help="Disable per-expert regime up-weighting in the dense expert loss.")
     p.add_argument("--residual-gate", action="store_true",
                    help="Use the residual (ReZero-style) gate: starts at uniform routing.")
+    p.add_argument("--ema-decay", type=float, default=None,
+                   help="Weight-averaging (EMA) decay, e.g. 0.999. Validation and "
+                        "checkpoints use the averaged weights.")
     p.add_argument("--last-step-skip", action="store_true",
                    help="Add a zero-initialised linear shortcut from the last step + horizon NWP.")
     return p.parse_args()
@@ -44,6 +47,7 @@ def main():
     cfg.epochs = args.epochs
     cfg.batch_size = args.batch_size
     cfg.lr = args.lr
+    cfg.ema_decay = args.ema_decay
 
     train_loader, val_loader, _, train_ds = build_dataloaders(
         batch_size=args.batch_size, num_workers=args.num_workers

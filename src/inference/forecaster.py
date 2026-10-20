@@ -113,6 +113,10 @@ class Forecaster:
 
     @torch.no_grad()
     def predict_windows(self, windows: list) -> dict:
+        if getattr(self.model, "n_meta_features", 0):
+            raise NotImplementedError(
+                "This checkpoint uses routing-metadata inputs (n_meta_features>0), "
+                "which the live forecaster does not scale/supply yet.")
         x_seq = np.concatenate([w["X_seq"] for w in windows])
         x_sigma = np.concatenate([w["X_sigma"] for w in windows])
         x_nwp = np.concatenate([w["X_nwp"] for w in windows])

@@ -23,6 +23,7 @@ Design notes:
   gradient through beta; clipping bounds the damage from those spikes.
 """
 
+import contextlib
 import math
 import time
 from typing import Dict
@@ -91,6 +92,11 @@ class Trainer:
         )
         self.early_stopping = EarlyStopping(patience=cfg.early_stopping_patience)
         self.history = []
+        # EMA copy of the weights (opt-in via cfg.ema_decay).
+        self.ema_state = None
+        self.ema_steps = 0
+        if getattr(cfg, "ema_decay", None):
+            self.ema_state = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
         ensure_dirs()
 
     # ---------------------------------------------------------------- #
@@ -98,8 +104,37 @@ class Trainer:
     def _batch_to_device(self, batch):
         return {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 
+    def _model_out(self, batch):
+        meta = batch["meta_feats"] if self.model.n_meta_features else None
+        return self.model(batch["x_seq"], batch["x_nwp"], batch["x_sigma"], meta=meta)
+
+    def _ema_update(self):
+        # Warm-up: early steps use a smaller decay so the average isn't
+        # dominated by the random initialisation.
+        self.ema_steps += 1
+        d = min(self.cfg.ema_decay, (1 + self.ema_steps) / (10 + self.ema_steps))
+        with torch.no_grad():
+            for k, v in self.model.state_dict().items():
+                if v.dtype.is_floating_point:
+                    self.ema_state[k].mul_(d).add_(v.detach(), alpha=1.0 - d)
+                else:
+                    self.ema_state[k].copy_(v)
+
+    @contextlib.contextmanager
+    def _ema_weights(self):
+        """Temporarily swap the EMA weights into the model (no-op if EMA is off)."""
+        if self.ema_state is None:
+            yield
+            return
+        backup = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+        self.model.load_state_dict(self.ema_state)
+        try:
+            yield
+        finally:
+            self.model.load_state_dict(backup)
+
     def _forward_loss(self, batch, epoch: int):
-        out = self.model(batch["x_seq"], batch["x_nwp"], batch["x_sigma"])
+        out = self._model_out(batch)
         sw = (regime_sample_weights(batch["regime_id"], self.model.n_experts)
               if self.use_regime_weights else None)
         loss = compute_composite_loss(
@@ -128,6 +163,8 @@ class Trainer:
             if self.cfg.grad_clip_norm:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
             self.optimizer.step()
+            if self.ema_state is not None:
+                self._ema_update()
 
             for k, v in loss["components"].items():
                 agg[k] = agg.get(k, 0.0) + v
@@ -143,7 +180,7 @@ class Trainer:
 
         for batch in self.val_loader:
             batch = self._batch_to_device(batch)
-            out = self.model(batch["x_seq"], batch["x_nwp"], batch["x_sigma"])
+            out = self._model_out(batch)
 
             pinball = multi_quantile_pinball_loss(out, batch["y"])
             _, loss = self._forward_loss(batch, epoch)
@@ -171,7 +208,8 @@ class Trainer:
         for epoch in range(epochs):
             t0 = time.time()
             train_metrics = self.train_epoch(epoch)
-            val_metrics = self.validate(epoch)
+            with self._ema_weights():
+                val_metrics = self.validate(epoch)
 
             self.scheduler.step()
 
@@ -194,14 +232,15 @@ class Trainer:
                 f"| {record['seconds']}s{'  <- best' if is_best else ''}"
             )
 
-            if is_best:
-                save_checkpoint(self.best_path, self.model, self.optimizer,
-                                self.scheduler, epoch, val_pinball,
-                                self.model_kwargs, self.history)
+            with self._ema_weights():
+                if is_best:
+                    save_checkpoint(self.best_path, self.model, self.optimizer,
+                                    self.scheduler, epoch, val_pinball,
+                                    self.model_kwargs, self.history)
 
-            save_checkpoint(self.last_path, self.model, self.optimizer,
-                            self.scheduler, epoch, self.early_stopping.best,
-                            self.model_kwargs, self.history)
+                save_checkpoint(self.last_path, self.model, self.optimizer,
+                                self.scheduler, epoch, self.early_stopping.best,
+                                self.model_kwargs, self.history)
 
             if self.early_stopping.should_stop:
                 logger.info(f"Early stopping at epoch {epoch} "

@@ -45,6 +45,14 @@ class TrainingConfig:
     # Gate load-balancing penalty: discourages collapse onto one expert.
     w_load_balance: float = 0.01
 
+    # ---- Opt-in accuracy options (off by default) ----
+    # Extra squared-error term on P50, to line the median up with an
+    # RMSE-based metric. 0 disables.
+    w_p50_mse: float = 0.0
+    # EMA decay for weight averaging; validation and checkpoints use the
+    # averaged weights. None disables.
+    ema_decay: float = None
+
     # Number of warmup epochs during which the expert loss weight is held
     # at 1.0 so experts learn something before routing starts to matter.
     expert_warmup_epochs: int = 5
