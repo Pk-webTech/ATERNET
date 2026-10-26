@@ -87,6 +87,25 @@ cannot be trusted without seed selection; ATERNET's seed spread is 0.02.
 (including the failed LSTM run) and ablation rows from an older gate; use
 `python build_final_table.py` (-> `outputs/reports/final_comparison.md`) instead.
 
+### Second region: South West England (PV_Live region 22, seeds 42-44)
+
+Same pipeline, same hyperparameters and training options (chosen on the Yorkshire
+experiments, nothing re-tuned for this site), isolated in its own workspace
+(`ATERNET_WORKSPACE=workspaces/sw ATERNET_REGION_ID=22`). No conformal
+calibration applied here.
+
+| Model | nRMSE % | PICP | PINAW | Winkler |
+|---|---|---|---|---|
+| **ATERNET (EMA)** | **2.63 ± 0.01** | 0.846 | **0.0375** | **0.0634** |
+| LightGBM quantile | 2.69 ± 0.00 | 0.787 | 0.0410 | 0.0670 |
+| PatchTST quantile | 2.92 ± 0.03 | 0.902 | 0.0610 | 0.0732 |
+
+ATERNET is ahead of both baselines on accuracy, interval width and Winkler score,
+with a seed spread (0.01) much smaller than the gaps (0.06 to LightGBM). Its
+intervals over-cover at 0.846 (nominal 0.80), so calibration would tighten them
+further. The LSTM and the ablations were not run on this site, and nRMSE is not
+comparable across regions (different capacity and aggregation).
+
 ### Ablations (3 seeds each; reports in `outputs/reports/`)
 
 On the final architecture (`multiseed_ablation_final.md`, `multiseed_experts.md`,
