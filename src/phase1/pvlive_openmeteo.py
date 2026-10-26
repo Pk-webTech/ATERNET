@@ -30,6 +30,7 @@ rather than one 15-30 minutes stale.
 """
 
 import hashlib
+import http.client
 import json
 import time
 import urllib.error
@@ -90,8 +91,11 @@ def _http_get_json(url: str, params: dict, cache: bool, retries: int = 4, timeou
             if e.code != 429 and 400 <= e.code < 500:
                 raise RuntimeError(f"HTTP {e.code} from {url}: {body}") from e
             err = f"HTTP {e.code}: {body}"
-        except (urllib.error.URLError, TimeoutError) as e:
-            err = str(e)
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                http.client.HTTPException, json.JSONDecodeError) as e:
+            # Includes truncated/corrupted bodies (IncompleteRead, invalid JSON):
+            # a half-delivered response is transient, so retry it.
+            err = f"{type(e).__name__}: {e}"
         if attempt == retries - 1:
             raise RuntimeError(f"Request to {url} failed after {retries} attempts: {err}")
         wait = 5 * 2 ** attempt
