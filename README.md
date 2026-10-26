@@ -54,17 +54,25 @@ seed 42, after per-regime conformal calibration.
 | nRMSE (% of capacity) | **3.69** |
 | nMAE (% of capacity) | **2.00** |
 | R² | **0.963** |
-| PICP (nominal 0.80) | **0.816** (0.804 before calibration) |
-| PINAW (mean interval width) | 0.0504 (0.0486 before) |
-| Winkler score | 0.0924 (0.0929 before) |
+| PICP, daytime points only (nominal 0.80) | **0.794** (0.670 before calibration) |
+| PICP, all points incl. night | 0.877 (0.804 before) |
+| PINAW (mean interval width, all points) | 0.0594 (0.0486 before) |
+| Winkler score | **0.0891** (0.0929 before) |
 | RMSE skill vs persistence | **0.836** |
 | Quantile-crossing violations | **0** |
 
-Per-regime coverage after calibration: overcast 0.824, dawn_ramp 0.821,
-clear_peak 0.797, volatile 0.787 (before: clear_peak 0.748, volatile 0.752).
-The volatile adjustment is estimated from only 44 validation windows and
-the validation and test seasons differ (validation coverage was 0.88 before
-calibration, test 0.80), so treat the volatile figure as approximate. Full numbers: `outputs/reports/evaluation_report.md`.
+**About PICP.** About 40% of forecast points are at night, where the true
+output and the interval are both zero, so they are "covered" ~100% of the time
+and inflate any all-points PICP (every PICP in the comparison tables below is
+all-points). The meaningful figure is **daytime** coverage, and the raw model
+under-covered there (0.670 against a nominal 0.80). Calibration
+(`src/evaluation/conformal.py`) now fits and applies the adjustment on daytime
+points only, which brings daytime coverage to 0.794 and improves Winkler.
+Per-regime daytime coverage after calibration: dawn_ramp 0.790, clear_peak
+0.828, overcast 0.779, volatile 0.797 (before: 0.66-0.69 in every regime). The
+volatile adjustment rests on few validation windows and validation and test
+seasons differ, so expect some drift on new data. Full numbers:
+`outputs/reports/evaluation_report.md`.
 
 ### Multi-seed comparison (seeds 42–44, mean ± std)
 
@@ -79,6 +87,13 @@ nRMSE 9.19 where others gave 3.7), so the headline numbers are multi-seed.
 | PatchTST quantile | 4.16 ± 0.00 | 0.880 | 0.0737 | 0.0971 |
 | LSTM quantile | unstable: 3 of 6 seeds failed (7.0–9.2); the other 3 reached 3.63–3.76 (Winkler 0.086–0.093) | | | |
 
+**Coverage caveat for this table.** The PICP column counts night points (see
+above). ATERNET's raw daytime coverage is 0.67, so its narrow intervals partly
+reflect under-coverage; the baselines' daytime coverage was not measured. Winkler,
+which penalises misses directly, is the fair joint measure for the raw intervals.
+After daytime calibration ATERNET's Winkler is 0.0891 (Yorkshire, seed 42), but the
+baselines were not calibrated, so that figure is not a like-for-like comparison.
+
 ATERNET ties LightGBM on point accuracy (the 0.02 gap is about one seed
 spread) and has the sharpest intervals and the best Winkler score of the
 stable models. A well-trained LSTM seed matches or beats it, but the LSTM
@@ -92,7 +107,7 @@ cannot be trusted without seed selection; ATERNET's seed spread is 0.02.
 Same pipeline, same hyperparameters and training options (chosen on the Yorkshire
 experiments, nothing re-tuned for this site), isolated in its own workspace
 (`ATERNET_WORKSPACE=workspaces/sw ATERNET_REGION_ID=22`). No conformal
-calibration applied here.
+calibration applied to the table (see below).
 
 | Model | nRMSE % | PICP | PINAW | Winkler |
 |---|---|---|---|---|
@@ -101,9 +116,10 @@ calibration applied here.
 | PatchTST quantile | 2.92 ± 0.03 | 0.902 | 0.0610 | 0.0732 |
 
 ATERNET is ahead of both baselines on accuracy, interval width and Winkler score,
-with a seed spread (0.01) much smaller than the gaps (0.06 to LightGBM). Its
-intervals over-cover at 0.846 (nominal 0.80), so calibration would tighten them
-further. The LSTM and the ablations were not run on this site, and nRMSE is not
+with a seed spread (0.01) much smaller than the gaps (0.06 to LightGBM). The
+reported all-points PICP of 0.846 is night-inflated: daytime coverage was 0.728
+(under-covered), and daytime-aware calibration raises it to 0.798 and improves
+Winkler 0.0638 -> 0.0629 (seed 42). The LSTM and the ablations were not run on this site, and nRMSE is not
 comparable across regions (different capacity and aggregation).
 
 ### Ablations (3 seeds each; reports in `outputs/reports/`)

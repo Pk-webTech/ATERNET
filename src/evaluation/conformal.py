@@ -56,8 +56,21 @@ def _conformity_scores(y: np.ndarray, p10: np.ndarray, p90: np.ndarray,
     raise ValueError(f"Unknown score '{score}'.")
 
 
+def daytime_mask(ds: ATERNETDataset, threshold: float = 0.02) -> np.ndarray:
+    """
+    (N, horizon) bool: forecast-horizon steps where the (scaled) forecast GHI
+    is above `threshold`. Built from a model INPUT, not the outcome, so
+    selecting these points doesn't bias coverage. At night the true output
+    and the interval are both ~0, which is "covered" almost by definition and
+    inflates PICP (a ~40 % share of points), so calibration and the daytime
+    coverage report use these points only.
+    """
+    T = ds.x_seq.shape[1]
+    return (ds.x_nwp[:, T:, 0].numpy() > threshold)
+
+
 def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
-              score: str = "pointwise"):
+              score: str = "pointwise", daytime_only: bool = True):
     """
     1. Run ATERNET on val and test.
     2. Compute per-regime conformity scores on val.
@@ -83,6 +96,8 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
     test_regimes = test_ds.regime_id.numpy()
 
     alpha = 1.0 - nominal  # 0.20
+    val_day = daytime_mask(val_ds)
+    test_day = daytime_mask(test_ds)
 
     # Compute per-regime adjustment
     adjustments = {}
@@ -93,8 +108,12 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
             logger.warning(f"Regime {rname}: too few val samples ({mask.sum()}), no adjustment.")
             continue
 
-        scores = _conformity_scores(y_val[mask], val_preds["p10"][mask],
-                                    val_preds["p90"][mask], score=score)
+        if daytime_only and score == "pointwise":
+            sel = mask[:, None] & val_day
+            scores = np.maximum(val_preds["p10"] - y_val, y_val - val_preds["p90"])[sel]
+        else:
+            scores = _conformity_scores(y_val[mask], val_preds["p10"][mask],
+                                        val_preds["p90"][mask], score=score)
         n = len(scores)
         # CQR quantile level: ceil((n+1)(1-alpha)) / n
         q_level = min(np.ceil((n + 1) * (1 - alpha)) / n, 1.0)
@@ -108,9 +127,13 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
     p50 = test_preds["p50"]
 
     for rid, q_hat in adjustments.items():
-        mask = test_regimes == rid
-        p10_cal[mask] = p10_cal[mask] - q_hat
-        p90_cal[mask] = p90_cal[mask] + q_hat
+        mask = (test_regimes == rid)[:, None]
+        if daytime_only:
+            mask = mask & test_day          # night intervals stay as predicted
+        else:
+            mask = np.broadcast_to(mask, p10_cal.shape)
+        p10_cal = np.where(mask, p10_cal - q_hat, p10_cal)
+        p90_cal = np.where(mask, p90_cal + q_hat, p90_cal)
 
     # Clip to [0, 1] and enforce non-crossing
     p10_cal = np.clip(p10_cal, 0.0, 1.0)
@@ -138,7 +161,15 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
         m_before = all_metrics(y_test[mask], test_preds["p10"][mask], p50[mask],
                                test_preds["p90"][mask])
         m_after = all_metrics(y_test[mask], p10_cal[mask], p50[mask], p90_cal[mask])
+        dmask = test_day[mask]
+        yr = y_test[mask]
+
+        def _day_picp(lo, hi):
+            return float((((yr >= lo) & (yr <= hi))[dmask]).mean()) if dmask.any() else float("nan")
+
         comparison[rname] = {
+            "picp_daytime_before": _day_picp(test_preds["p10"][mask], test_preds["p90"][mask]),
+            "picp_daytime_after": _day_picp(p10_cal[mask], p90_cal[mask]),
             "n": int(mask.sum()),
             "picp_before": m_before["picp"],
             "picp_after": m_after["picp"],
@@ -151,7 +182,16 @@ def calibrate(nominal: float = 0.80, checkpoint_path=BEST_CHECKPOINT_PATH,
         logger.info(f"  {rname:12s}: PICP {m_before['picp']:.3f} -> {m_after['picp']:.3f} "
                     f"| PINAW {m_before['pinaw']:.4f} -> {m_after['pinaw']:.4f}")
 
+    def _agg_day(lo, hi):
+        return float((((y_test >= lo) & (y_test <= hi))[test_day]).mean())
+    day_before = _agg_day(test_preds["p10"], test_preds["p90"])
+    day_after = _agg_day(p10_cal, p90_cal)
+    logger.info(f"Daytime-only PICP: {day_before:.3f} -> {day_after:.3f} (nominal {nominal})")
+
     results = {
+        "picp_daytime_before": day_before,
+        "picp_daytime_after": day_after,
+        "daytime_only": daytime_only,
         "model": "ATERNET + CQR (per-regime)",
         "nominal": nominal,
         "adjustments": {ID_TO_REGIME[rid]: q for rid, q in adjustments.items()},

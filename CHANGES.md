@@ -5,6 +5,11 @@
 All new options are opt-in and off by default; older checkpoints load unchanged.
 
 ### Fixed
+- **Coverage was overstated by night points** (`src/evaluation/conformal.py`). ~40 % of forecast
+  points are at night where truth and interval are both 0, so all-points PICP looked calibrated (0.80)
+  while daytime coverage was only 0.67 (Yorkshire) / 0.73 (South West). Calibration is now fitted and
+  applied on daytime points only: daytime coverage 0.670 -> 0.794 and 0.728 -> 0.798, Winkler 0.0929 -> 0.0891.
+  `daytime_mask()` is built from forecast GHI (an input), not the outcome.
 - **Conformal calibration did almost nothing** (`src/evaluation/conformal.py`). The score
   averaged signed violations over the 16 horizon steps, giving adjustments of ~0 (and a
   negative one for volatile, which shrank that interval). Scores are now per forecast step;
