@@ -1,0 +1,727 @@
+{
+  "generated": "2026-10-26",
+  "sites": {
+    "yorkshire": {
+      "title": "Yorkshire (PV_Live region 23)",
+      "simulated": false,
+      "note": "Measured regional PV; training 2023-01 to 2026-09; seeds 42-44 (LSTM: 42-47).",
+      "rows": [
+        {
+          "model": "ATERNET (final: residual gate + shortcut + EMA)",
+          "kind": "aternet",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.692,
+            3.684,
+            3.714
+          ],
+          "nrmse_pct": {
+            "mean": 3.6966279047372144,
+            "std": 0.015572701732692136
+          },
+          "nmae_pct": {
+            "mean": 2.004842879904183,
+            "std": 0.009754988682134104
+          },
+          "r2": {
+            "mean": 0.9626483235233682,
+            "std": 0.00031495923243754053
+          },
+          "picp": {
+            "mean": 0.8092929190360141,
+            "std": 0.006550651858852705
+          },
+          "pinaw": {
+            "mean": 0.04961967905833301,
+            "std": 0.0008958247447920546
+          },
+          "winkler": {
+            "mean": 0.09223741824469721,
+            "std": 0.0009951363204280803
+          }
+        },
+        {
+          "model": "ATERNET without EMA",
+          "kind": "aternet",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.74,
+            3.873,
+            3.887
+          ],
+          "nrmse_pct": {
+            "mean": 3.8330755977714452,
+            "std": 0.0808757899884652
+          },
+          "nmae_pct": {
+            "mean": 2.1000125855019784,
+            "std": 0.04750699328704004
+          },
+          "r2": {
+            "mean": 0.9598285848623425,
+            "std": 0.0016847053350754974
+          },
+          "picp": {
+            "mean": 0.8204796236122394,
+            "std": 0.006982974298288034
+          },
+          "pinaw": {
+            "mean": 0.05361548729196578,
+            "std": 0.0014715523504425108
+          },
+          "winkler": {
+            "mean": 0.09663006920067889,
+            "std": 0.002776027014857846
+          }
+        },
+        {
+          "model": "  ablation: no dense expert loss",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.859,
+            3.96,
+            4.014
+          ],
+          "nrmse_pct": {
+            "mean": 3.9440664721727425,
+            "std": 0.07873373820214587
+          },
+          "nmae_pct": {
+            "mean": 2.1717396396787367,
+            "std": 0.028927616773090015
+          },
+          "r2": {
+            "mean": 0.9574698121239648,
+            "std": 0.001692682620841835
+          },
+          "picp": {
+            "mean": 0.7763674519360952,
+            "std": 0.015684979538620598
+          },
+          "pinaw": {
+            "mean": 0.05062930176835639,
+            "std": 0.0021095919338467734
+          },
+          "winkler": {
+            "mean": 0.10478820632093121,
+            "std": 0.003680721255630649
+          }
+        },
+        {
+          "model": "  ablation: no gate (uniform average)",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.76,
+            3.856,
+            3.972
+          ],
+          "nrmse_pct": {
+            "mean": 3.8625764245898178,
+            "std": 0.1062882663047001
+          },
+          "nmae_pct": {
+            "mean": 2.1065785269782733,
+            "std": 0.05589326992903641
+          },
+          "r2": {
+            "mean": 0.9591993730691207,
+            "std": 0.0022474418523551923
+          },
+          "picp": {
+            "mean": 0.8238559436772271,
+            "std": 0.014411578973188137
+          },
+          "pinaw": {
+            "mean": 0.05436462837867809,
+            "std": 0.005014875466558942
+          },
+          "winkler": {
+            "mean": 0.09518585878035186,
+            "std": 0.0003150451933313841
+          }
+        },
+        {
+          "model": "  ablation: fixed temperature",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.872,
+            3.834,
+            3.727
+          ],
+          "nrmse_pct": {
+            "mean": 3.810697235322422,
+            "std": 0.07527545740180688
+          },
+          "nmae_pct": {
+            "mean": 2.0907804300647346,
+            "std": 0.048937391862327054
+          },
+          "r2": {
+            "mean": 0.9602977300117846,
+            "std": 0.001561714316658145
+          },
+          "picp": {
+            "mean": 0.8108668426753317,
+            "std": 0.007642213622253058
+          },
+          "pinaw": {
+            "mean": 0.05253112759946269,
+            "std": 0.001165646118341613
+          },
+          "winkler": {
+            "mean": 0.09634840852999926,
+            "std": 0.0026742523984505597
+          }
+        },
+        {
+          "model": "  ablation: fixed interval width",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.887,
+            3.949,
+            3.735
+          ],
+          "nrmse_pct": {
+            "mean": 3.857359297140557,
+            "std": 0.11006823536219303
+          },
+          "nmae_pct": {
+            "mean": 2.1087837052674647,
+            "std": 0.06568596096818549
+          },
+          "r2": {
+            "mean": 0.9593079704686073,
+            "std": 0.0023085386732163036
+          },
+          "picp": {
+            "mean": 0.8196249661521797,
+            "std": 0.014406211937375393
+          },
+          "pinaw": {
+            "mean": 0.05389427757689883,
+            "std": 0.0019024792231183776
+          },
+          "winkler": {
+            "mean": 0.09636797519743469,
+            "std": 0.004075993110730966
+          }
+        },
+        {
+          "model": "  ablation: sigma_NWP only",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.759,
+            3.883,
+            3.718
+          ],
+          "nrmse_pct": {
+            "mean": 3.786431720466663,
+            "std": 0.0858898843700328
+          },
+          "nmae_pct": {
+            "mean": 2.0646460983771324,
+            "std": 0.0579716977067664
+          },
+          "r2": {
+            "mean": 0.9607984990055817,
+            "std": 0.0017865141566142228
+          },
+          "picp": {
+            "mean": 0.8129061738424045,
+            "std": 0.005681955504922167
+          },
+          "pinaw": {
+            "mean": 0.051940020166561324,
+            "std": 0.00197279525166549
+          },
+          "winkler": {
+            "mean": 0.09474315469361715,
+            "std": 0.0016293965619556706
+          }
+        },
+        {
+          "model": "  ablation: sigma_expert only",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.794,
+            3.938,
+            3.764
+          ],
+          "nrmse_pct": {
+            "mean": 3.8322185923386147,
+            "std": 0.09319517964207714
+          },
+          "nmae_pct": {
+            "mean": 2.093058076520109,
+            "std": 0.04948737682999353
+          },
+          "r2": {
+            "mean": 0.9598426330400502,
+            "std": 0.001964583077733782
+          },
+          "picp": {
+            "mean": 0.8183979826699161,
+            "std": 0.006463449322981252
+          },
+          "pinaw": {
+            "mean": 0.05393545425511809,
+            "std": 0.0017786779263951299
+          },
+          "winkler": {
+            "mean": 0.09558173248277303,
+            "std": 0.0026749642380417926
+          }
+        },
+        {
+          "model": "  ablation: single expert",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.831,
+            3.95,
+            3.84
+          ],
+          "nrmse_pct": {
+            "mean": 3.87357331825562,
+            "std": 0.0659748574342108
+          },
+          "nmae_pct": {
+            "mean": 2.1366559850039284,
+            "std": 0.04990233664985271
+          },
+          "r2": {
+            "mean": 0.9589794925159225,
+            "std": 0.0014037964464150173
+          },
+          "picp": {
+            "mean": 0.8202511508258867,
+            "std": 0.0014811805732941959
+          },
+          "pinaw": {
+            "mean": 0.05620121774404829,
+            "std": 0.003068901260968814
+          },
+          "winkler": {
+            "mean": 0.0981170735909156,
+            "std": 0.0024618380181613926
+          }
+        },
+        {
+          "model": "  ablation: no regime weights",
+          "kind": "ablation",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.707,
+            3.737,
+            3.888
+          ],
+          "nrmse_pct": {
+            "mean": 3.7775093679930616,
+            "std": 0.09714665909861353
+          },
+          "nmae_pct": {
+            "mean": 2.0505197517946097,
+            "std": 0.0632099437599224
+          },
+          "r2": {
+            "mean": 0.9609792124723455,
+            "std": 0.0020193672609778277
+          },
+          "picp": {
+            "mean": 0.8091659897102627,
+            "std": 0.012912632872250186
+          },
+          "pinaw": {
+            "mean": 0.050765388947388766,
+            "std": 0.004101185708377834
+          },
+          "winkler": {
+            "mean": 0.09535474106744869,
+            "std": 0.0016236165768005757
+          }
+        },
+        {
+          "model": "LightGBM quantile",
+          "kind": "baseline",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            3.707,
+            3.722,
+            3.717
+          ],
+          "nrmse_pct": {
+            "mean": 3.7152883087115014,
+            "std": 0.007394910430431663
+          },
+          "nmae_pct": {
+            "mean": 1.9546657838394246,
+            "std": 0.004872553608702238
+          },
+          "r2": {
+            "mean": 0.9622706194496855,
+            "std": 0.0001501564977875723
+          },
+          "picp": {
+            "mean": 0.8142685486054697,
+            "std": 0.004915252440513244
+          },
+          "pinaw": {
+            "mean": 0.06442342594968413,
+            "std": 0.0023457279005889963
+          },
+          "winkler": {
+            "mean": 0.09916717003636556,
+            "std": 0.0012673600973206135
+          }
+        },
+        {
+          "model": "PatchTST quantile",
+          "kind": "baseline",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            4.161,
+            4.169,
+            4.162
+          ],
+          "nrmse_pct": {
+            "mean": 4.163910259957464,
+            "std": 0.004326172375778386
+          },
+          "nmae_pct": {
+            "mean": 2.2170589999917047,
+            "std": 0.00626107854575983
+          },
+          "r2": {
+            "mean": 0.9526089293043718,
+            "std": 9.850078203190186e-05
+          },
+          "picp": {
+            "mean": 0.880102558895207,
+            "std": 0.008777013734780405
+          },
+          "pinaw": {
+            "mean": 0.07368291772602162,
+            "std": 0.0016646006873566438
+          },
+          "winkler": {
+            "mean": 0.09706364872622604,
+            "std": 0.00031775263234480676
+          }
+        },
+        {
+          "model": "LSTM quantile",
+          "kind": "baseline",
+          "n_seeds": 6,
+          "per_seed_nrmse": [
+            9.185,
+            3.758,
+            3.665,
+            3.63,
+            7.001,
+            7.041
+          ],
+          "nrmse_pct": {
+            "mean": 5.713229916177774,
+            "std": 2.359356164412041
+          },
+          "nmae_pct": {
+            "mean": 2.4676786296573443,
+            "std": 0.6579244839009891
+          },
+          "r2": {
+            "mean": 0.8981016788512511,
+            "std": 0.07914282192145798
+          },
+          "picp": {
+            "mean": 0.8303378012455997,
+            "std": 0.01579026660551866
+          },
+          "pinaw": {
+            "mean": 0.06130759695167561,
+            "std": 0.007930746937892167
+          },
+          "winkler": {
+            "mean": 0.0953099724687726,
+            "std": 0.006702075270515786
+          }
+        }
+      ],
+      "calibration": {
+        "picp_daytime_before": 0.6701972555746141,
+        "picp_daytime_after": 0.7940394511149228,
+        "winkler_before": 0.0929260806529672,
+        "winkler_after": 0.08913372607375303,
+        "pinaw_before": 0.048636099767925954,
+        "pinaw_after": 0.05935303848419466,
+        "per_regime": {
+          "dawn_ramp": {
+            "n": 352,
+            "picp_daytime_before": 0.6577067029601905,
+            "picp_daytime_after": 0.790404899625723
+          },
+          "clear_peak": {
+            "n": 459,
+            "picp_daytime_before": 0.6716550864065562,
+            "picp_daytime_after": 0.828077676821664
+          },
+          "overcast": {
+            "n": 1446,
+            "picp_daytime_before": 0.6694831829368335,
+            "picp_daytime_after": 0.7785890073831009
+          },
+          "volatile": {
+            "n": 205,
+            "picp_daytime_before": 0.6846392552366175,
+            "picp_daytime_after": 0.7971295577967417
+          }
+        }
+      }
+    },
+    "south_west": {
+      "title": "South West England (PV_Live region 22)",
+      "simulated": false,
+      "note": "Second measured region; hyperparameters unchanged from Yorkshire; seeds 42-44.",
+      "rows": [
+        {
+          "model": "ATERNET (final: residual gate + shortcut + EMA)",
+          "kind": "aternet",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            2.641,
+            2.627,
+            2.631
+          ],
+          "nrmse_pct": {
+            "mean": 2.6331006266712254,
+            "std": 0.0072996830295528215
+          },
+          "nmae_pct": {
+            "mean": 1.3805862600260104,
+            "std": 0.0038730093159472408
+          },
+          "r2": {
+            "mean": 0.9827653887268806,
+            "std": 9.561456966829636e-05
+          },
+          "picp": {
+            "mean": 0.8457131735716219,
+            "std": 0.007076071795568561
+          },
+          "pinaw": {
+            "mean": 0.03746480925242285,
+            "std": 0.0011935530522201624
+          },
+          "winkler": {
+            "mean": 0.06335431900534494,
+            "std": 0.0004053158539734825
+          }
+        },
+        {
+          "model": "LightGBM quantile",
+          "kind": "baseline",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            2.688,
+            2.689,
+            2.682
+          ],
+          "nrmse_pct": {
+            "mean": 2.686212781220726,
+            "std": 0.003635370780349492
+          },
+          "nmae_pct": {
+            "mean": 1.3849642517062393,
+            "std": 0.001763988117225444
+          },
+          "r2": {
+            "mean": 0.9820631693852112,
+            "std": 4.8531498659049816e-05
+          },
+          "picp": {
+            "mean": 0.7871479826699161,
+            "std": 0.00011447120615409543
+          },
+          "pinaw": {
+            "mean": 0.04103316431588098,
+            "std": 0.0006238461904020172
+          },
+          "winkler": {
+            "mean": 0.06704448651998567,
+            "std": 0.0003161585664778594
+          }
+        },
+        {
+          "model": "PatchTST quantile",
+          "kind": "baseline",
+          "n_seeds": 3,
+          "per_seed_nrmse": [
+            2.951,
+            2.922,
+            2.9
+          ],
+          "nrmse_pct": {
+            "mean": 2.924159682771959,
+            "std": 0.025347957689080547
+          },
+          "nmae_pct": {
+            "mean": 1.5456989856341634,
+            "std": 0.013363647482942506
+          },
+          "r2": {
+            "mean": 0.9787436702108092,
+            "std": 0.00036874735317107723
+          },
+          "picp": {
+            "mean": 0.9022136474411049,
+            "std": 0.001500130656244346
+          },
+          "pinaw": {
+            "mean": 0.060952563135986015,
+            "std": 0.00405732541235177
+          },
+          "winkler": {
+            "mean": 0.07315101222865251,
+            "std": 0.004021602218894405
+          }
+        }
+      ],
+      "calibration": {
+        "picp_daytime_before": 0.7279947632555095,
+        "picp_daytime_after": 0.7983416975780057,
+        "winkler_before": 0.06382194103352677,
+        "winkler_after": 0.06294731940442226,
+        "pinaw_before": 0.036509220657883326,
+        "pinaw_after": 0.04125048539694129,
+        "per_regime": {
+          "dawn_ramp": {
+            "n": 355,
+            "picp_daytime_before": 0.6942916093535075,
+            "picp_daytime_after": 0.7417469050894085
+          },
+          "clear_peak": {
+            "n": 558,
+            "picp_daytime_before": 0.7176384839650146,
+            "picp_daytime_after": 0.8362973760932945
+          },
+          "overcast": {
+            "n": 1394,
+            "picp_daytime_before": 0.7408312958435208,
+            "picp_daytime_after": 0.7899056933286762
+          },
+          "volatile": {
+            "n": 155,
+            "picp_daytime_before": 0.7410029498525074,
+            "picp_daytime_after": 0.7988200589970501
+          }
+        }
+      }
+    },
+    "vellore": {
+      "title": "VIT Vellore, India (SIMULATED PV)",
+      "simulated": true,
+      "note": "Generation is SIMULATED from ERA5 reanalysis with a physical PV model (1 MWp illustrative plant); inputs are real multi-model weather forecasts. Single seed. Not a real-world accuracy result.",
+      "rows": [
+        {
+          "model": "ATERNET (final configuration)",
+          "kind": "aternet",
+          "n_seeds": 1,
+          "per_seed_nrmse": [
+            3.748
+          ],
+          "nrmse_pct": {
+            "mean": 3.7477240652923296,
+            "std": 0.0
+          },
+          "nmae_pct": {
+            "mean": 1.7021741410182052,
+            "std": 0.0
+          },
+          "r2": {
+            "mean": 0.9736187034362749,
+            "std": 0.0
+          },
+          "picp": {
+            "mean": 0.845325484764543,
+            "std": 0.0
+          },
+          "pinaw": {
+            "mean": 0.04378083327835053,
+            "std": 0.0
+          },
+          "winkler": {
+            "mean": 0.08734004158201211,
+            "std": 0.0
+          }
+        },
+        {
+          "model": "LightGBM quantile",
+          "kind": "baseline",
+          "n_seeds": 1,
+          "per_seed_nrmse": [
+            3.964
+          ],
+          "nrmse_pct": {
+            "mean": 3.963537723559548,
+            "std": 0.0
+          },
+          "nmae_pct": {
+            "mean": 1.8762801944211718,
+            "std": 0.0
+          },
+          "r2": {
+            "mean": 0.9704928738691456,
+            "std": 0.0
+          },
+          "picp": {
+            "mean": 0.7810941828254848,
+            "std": 0.0
+          },
+          "pinaw": {
+            "mean": 0.04822787794980326,
+            "std": 0.0
+          },
+          "winkler": {
+            "mean": 0.09603464792331308,
+            "std": 0.0
+          }
+        }
+      ],
+      "calibration": {
+        "picp_daytime_before": 0.7043694876455935,
+        "picp_daytime_after": 0.7445633878677709,
+        "winkler_before": 0.08734004158201211,
+        "winkler_after": 0.08614368152358981,
+        "pinaw_before": 0.04378083327835053,
+        "pinaw_after": 0.04692905320550504,
+        "per_regime": {
+          "dawn_ramp": {
+            "n": 158,
+            "picp_daytime_before": 0.7447960033305578,
+            "picp_daytime_after": 0.7756036636136553
+          },
+          "clear_peak": {
+            "n": 282,
+            "picp_daytime_before": 0.6678311499272198,
+            "picp_daytime_after": 0.7222707423580786
+          },
+          "overcast": {
+            "n": 1137,
+            "picp_daytime_before": 0.7096917605216361,
+            "picp_daytime_after": 0.7443687018375815
+          },
+          "volatile": {
+            "n": 228,
+            "picp_daytime_before": 0.701058201058201,
+            "picp_daytime_after": 0.746031746031746
+          }
+        }
+      }
+    }
+  }
+}

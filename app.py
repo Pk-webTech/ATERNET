@@ -161,6 +161,76 @@ def load_comparison():
     path = REPORTS_DIR / "comparison_table.json"
     return load_json(path) if path.exists() else None
 
+SUMMARY_PATH = ROOT / "docs" / "results_summary.json"
+VIT_DIR = ROOT / "workspaces" / "vit"
+
+
+@st.cache_data
+def load_summary():
+    """Aggregated multi-seed results (rebuilt by build_results_summary.py)."""
+    return load_json(SUMMARY_PATH) if SUMMARY_PATH.exists() else None
+
+
+@st.cache_data
+def load_calibration():
+    p = METRICS_DIR / "conformal_calibration.json"
+    return load_json(p) if p.exists() else None
+
+
+def fmt_ms(d, nd=3):
+    """{'mean': m, 'std': s} -> 'm +/- s'."""
+    return f"{d['mean']:.{nd}f} \u00b1 {d['std']:.{nd}f}"
+
+
+def verdict(atern, base):
+    """
+    Plain-language comparison of ATERNET with one baseline on nRMSE and Winkler
+    (lower is better). A gap counts only if it exceeds ~2 seed standard deviations.
+    """
+    spread = max(base["per_seed_nrmse"]) - min(base["per_seed_nrmse"])
+    if base["n_seeds"] > 1 and spread > 1.0:
+        seeds = ", ".join(f"{v:.2f}" for v in base["per_seed_nrmse"])
+        return f"Unstable across seeds (nRMSE per seed: {seeds}); no stable comparison"
+    out = []
+    for key, name in (("nrmse_pct", "nRMSE"), ("winkler", "Winkler")):
+        a, b = atern[key], base[key]
+        gap = b["mean"] - a["mean"]                      # > 0 means ATERNET is lower (better)
+        tol = 2 * max(a["std"], b["std"], 1e-9)
+        if atern["n_seeds"] < 2 or base["n_seeds"] < 2:
+            tol = abs(gap) + 1                           # single seed: never claim a win
+        if gap > tol:
+            out.append(f"{name}: ATERNET better by {gap / b['mean'] * 100:.1f}%")
+        elif gap < -tol:
+            out.append(f"{name}: ATERNET worse by {-gap / b['mean'] * 100:.1f}%")
+        else:
+            out.append(f"{name}: tie (within seed noise)")
+    return "; ".join(out)
+
+
+def _with_skip(model, y_routed, x_seq, x_nwp):
+    """Add the optional last-step shortcut exactly as ATERNET.forward does."""
+    if getattr(model, "last_step_skip", None) is None:
+        return y_routed
+    window = x_seq.shape[1]
+    parts = [x_seq[:, -1, :], x_nwp[:, window:, :].flatten(1)]
+    return y_routed + model.last_step_skip(torch.cat(parts, dim=1))
+
+
+def _gate_at_sigma(model, emb, router_out, sigma):
+    """Recompute the gate for an overridden sigma_total (same maths as GatingNetwork)."""
+    from torch.nn.functional import softplus
+    gate = model.router.gate
+    gate_in = torch.cat([emb["h_expert"], emb["h_sigma"],
+                         router_out["sigma_nwp_norm"].unsqueeze(1),
+                         router_out["sigma_expert_norm"].unsqueeze(1),
+                         router_out["alpha"].unsqueeze(1)], dim=1)
+    logits = gate.logit_net(gate_in)
+    temp = torch.exp(torch.clamp(softplus(gate.raw_beta) * sigma, -8, 8))
+    scaled = logits / temp.unsqueeze(1)
+    if getattr(gate, "residual", False):
+        scaled = gate.delta * scaled
+    return temp, torch.softmax(scaled, dim=-1).numpy().ravel()
+
 
 # ------------------------------------------------------------------ #
 # Sidebar
@@ -170,8 +240,8 @@ with st.sidebar:
     st.caption("Adaptive Temporal Expert Routing Network\nfor Probabilistic Solar Power Forecasting")
     st.markdown("---")
     page = st.radio("", [
-        "Dashboard", "Live Forecast", "Forecast Explorer", "Routing & Experts",
-        "Uncertainty", "Guarantee Demo", "Baselines & Ablations", "Training",
+        "Dashboard", "Results & Evidence", "India Demo (Simulated)", "Live Forecast",
+        "Forecast Explorer", "Routing & Experts", "Uncertainty", "Guarantee Demo", "Training",
     ], label_visibility="collapsed")
     st.markdown("---")
     st.caption("BCSE497J Capstone Project\nVIT Vellore")
@@ -182,19 +252,27 @@ with st.sidebar:
 # ------------------------------------------------------------------ #
 if page == "Dashboard":
     st.markdown("# ATERNET")
+    n_params = sum(p.numel() for p in load_model()[0].parameters())
     st.markdown("Probabilistic solar power forecasting with uncertainty-aware expert routing. "
-                "967,132 parameters, 50 passing tests, zero quantile-crossing violations.")
+                f"{n_params:,} parameters, zero quantile-crossing violations on the test set.")
 
     metrics = load_metrics()
     h = metrics["headline"]
+    cal = load_calibration() or {}
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("nRMSE", f"{h['nrmse_pct']:.2f}%")
     c2.metric("nMAE", f"{h['nmae_pct']:.2f}%")
     c3.metric("R\u00b2", f"{h['r2']:.4f}")
-    c4.metric("PICP", f"{h['picp']:.3f}")
-    c5.metric("Winkler", f"{h['winkler']:.4f}")
-    c6.metric("Skill vs Persist.", f"{h.get('rmse_skill_vs_persistence', 0):.3f}")
+    c4.metric("PICP (all points)", f"{h['picp']:.3f}",
+              help="Includes night points, which are trivially covered, so this flatters coverage.")
+    day_after = cal.get("picp_daytime_after")
+    c5.metric("PICP (daytime, calibrated)", f"{day_after:.3f}" if day_after is not None else "n/a",
+              help="Coverage of the P10-P90 interval on daytime points after conformal calibration (nominal 0.80).")
+    c6.metric("Winkler (raw)", f"{h['winkler']:.4f}")
+    c7.metric("Skill vs Persist.", f"{h.get('rmse_skill_vs_persistence', 0):.3f}")
+    st.caption("Single trained model (seed 42), Yorkshire test split. For the multi-seed comparison with "
+               "LightGBM / PatchTST / LSTM and the second region, open **Results & Evidence**.")
 
     st.markdown("")
     col_left, col_right = st.columns([3, 2])
@@ -223,16 +301,19 @@ if page == "Dashboard":
                           yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_right:
-        section_header("Per-regime coverage")
+        section_header("Per-regime accuracy and coverage")
         pr = metrics.get("per_regime", {})
+        cal_pr = cal.get("per_regime_comparison", {})
         regime_data = [{"Regime": rn, "n": m["n"], "nRMSE %": round(m["nrmse_pct"], 2),
-                        "PICP": round(m["picp"], 3), "PINAW": round(m["pinaw"], 4)}
+                        "PICP (all pts)": round(m["picp"], 3),
+                        "Daytime PICP (calibrated)": (round(cal_pr[rn]["picp_daytime_after"], 3)
+                                                      if rn in cal_pr and "picp_daytime_after" in cal_pr[rn] else "n/a")}
                        for rn, m in pr.items() if m.get("n", 0) > 0]
         if regime_data:
-            st.dataframe(regime_data, use_container_width=True, hide_index=True)
+            st.dataframe(regime_data, width="stretch", hide_index=True)
         section_header("Guarantees")
         st.markdown("Three structural claims, each enforced by construction and verified by named tests:\n\n"
                     "1. P10 \u2264 P50 \u2264 P90 always (softplus width)\n"
@@ -296,9 +377,9 @@ elif page == "Live Forecast":
                           yaxis_title="PV generation (MW)",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.dataframe(fc[["target_time", "p10_mw", "p50_mw", "p90_mw"]].round(1),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
     backtests = sorted(PREDICTIONS_DIR.glob("backtest_*.csv"))
     if backtests:
@@ -332,7 +413,7 @@ elif page == "Live Forecast":
                           yaxis_title="PV generation (MW)",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 # ------------------------------------------------------------------ #
@@ -381,7 +462,7 @@ elif page == "Forecast Explorer":
                           yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         mae_val = float(np.mean(np.abs(y[wi] - preds["p50"][wi])))
         covered = float(np.mean((y[wi] >= preds["p10"][wi]) & (y[wi] <= preds["p90"][wi])))
         mc1, mc2, mc3, mc4 = st.columns(4)
@@ -414,7 +495,7 @@ elif page == "Routing & Experts":
             text=np.round(mat, 3).astype(str), texttemplate="%{text}",
             colorscale=[[0, "#F7F5F2"], [1, "#2E5A88"]], zmin=0, zmax=0.5, showscale=False))
         fig.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Expert", yaxis_title="Regime")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col2:
         st.markdown("**Argmax share**")
@@ -427,7 +508,7 @@ elif page == "Routing & Experts":
         fig2.update_layout(**PLOTLY_LAYOUT, height=300, yaxis_title="Fraction",
                            yaxis_range=[0, max(shares.values()) * 1.3])
         styled_axes(fig2)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     st.markdown("---")
     section_header("Per-window routing")
@@ -445,7 +526,7 @@ elif page == "Routing & Experts":
             text=[f"{v:.3f}" for v in gate[wi2]], textposition="outside"))
         fig3.update_layout(**PLOTLY_LAYOUT, height=260, yaxis_range=[0, 1], yaxis_title="Gate weight")
         styled_axes(fig3)
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
 
 # ------------------------------------------------------------------ #
@@ -479,7 +560,7 @@ elif page == "Uncertainty":
             fig.update_layout(**PLOTLY_LAYOUT, height=380,
                               xaxis_title=xlabel, yaxis_title="Mean |error|")
             styled_axes(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     legend_html = " ".join(
         f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
@@ -490,13 +571,17 @@ elif page == "Uncertainty":
     cqr_path = METRICS_DIR / "conformal_calibration.json"
     if cqr_path.exists():
         st.markdown("---")
-        section_header("Conformal calibration", "Per-regime CQR on the validation set")
+        section_header("Conformal calibration", "Per-regime conformal calibration fitted on daytime validation points")
         cqr = load_json(cqr_path)
         comp = cqr.get("per_regime_comparison", {})
+        _f = lambda v: round(v, 3) if isinstance(v, (int, float)) else "n/a"
         st.dataframe([{"Regime": rn, "n": d["n"],
-                       "PICP before": round(d["picp_before"], 3), "PICP after": round(d["picp_after"], 3),
+                       "Daytime PICP before": _f(d.get("picp_daytime_before")),
+                       "Daytime PICP after": _f(d.get("picp_daytime_after")),
                        "PINAW before": round(d["pinaw_before"], 4), "PINAW after": round(d["pinaw_after"], 4)}
-                      for rn, d in comp.items()], use_container_width=True, hide_index=True)
+                      for rn, d in comp.items()], width="stretch", hide_index=True)
+        st.caption("Coverage is measured on daytime points only (nominal 0.80). Night points have a true value "
+                   "and interval of exactly 0 and are trivially covered, which would inflate the number.")
 
 
 # ------------------------------------------------------------------ #
@@ -519,20 +604,13 @@ elif page == "Guarantee Demo":
         pool_out = model.expert_pool(emb["h_expert"])
         router_real = model.router(emb["h_expert"], emb["h_sigma"], x_sigma,
                                     pool_out["sigma_expert"], pool_out["stacked"])
-        q_real = model.decoder(router_real["y_hat_routed"], emb["h_expert"],
+        y_routed = _with_skip(model, router_real["y_hat_routed"], x_seq, x_nwp)
+        q_real = model.decoder(y_routed, emb["h_expert"],
                                 emb["h_nwp"], router_real["sigma_total"])
         sigma_manual = torch.tensor([sigma_override], dtype=torch.float32)
-        q_manual = model.decoder(router_real["y_hat_routed"], emb["h_expert"],
+        q_manual = model.decoder(y_routed, emb["h_expert"],
                                   emb["h_nwp"], sigma_manual)
-        from torch.nn.functional import softplus
-        try:
-            beta = model.router.gate.beta
-            T_manual = torch.exp(torch.clamp(softplus(beta) * sigma_manual, -8, 8))
-            logits = model.router.gate.logits_net(torch.cat([emb["h_expert"], emb["h_sigma"]], dim=-1))
-            gate_manual = torch.softmax(logits / T_manual, dim=-1).numpy().ravel()
-        except AttributeError:
-            gate_manual = router_real["gate_weights"].numpy().ravel()
-            T_manual = router_real["temperature"]
+        T_manual, gate_manual = _gate_at_sigma(model, emb, router_real, sigma_manual)
 
     y_obs = ds.y[wi3].numpy()
     steps = np.arange(1, len(y_obs) + 1)
@@ -556,7 +634,7 @@ elif page == "Guarantee Demo":
         fig.update_layout(**PLOTLY_LAYOUT, height=280, showlegend=False,
                           yaxis_range=[-0.02, 1.02], xaxis_title="Step")
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with g2:
         st.markdown("**G2: Width grows with \u03c3**")
@@ -564,7 +642,7 @@ elif page == "Guarantee Demo":
         widths_sweep = []
         for s in sigmas_sweep:
             with torch.no_grad():
-                q_s = model.decoder(router_real["y_hat_routed"], emb["h_expert"],
+                q_s = model.decoder(y_routed, emb["h_expert"],
                      emb["h_nwp"], torch.tensor([s], dtype=torch.float32))
             widths_sweep.append(float((q_s["p90"] - q_s["p10"]).mean()))
         monotone = all(widths_sweep[i] <= widths_sweep[i+1] + 1e-6 for i in range(len(widths_sweep)-1))
@@ -575,10 +653,13 @@ elif page == "Guarantee Demo":
                        annotation_text=f"\u03c3={sigma_override:.2f}")
         fig2.update_layout(**PLOTLY_LAYOUT, height=280, xaxis_title="\u03c3_total", yaxis_title="Mean width")
         styled_axes(fig2)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     with g3:
         st.markdown("**G3: Routing softens**")
+        st.caption("The final model uses a residual gate that stays close to uniform routing, so the shift is "
+                   "small. The guarantee is structural (temperature rises with \u03c3), not a claim that "
+                   "routing drives accuracy.")
         T_val = float(T_manual.item() if hasattr(T_manual, 'item') else T_manual)
         st.metric("Temperature", f"{T_val:.3f}")
         fig3 = make_subplots(rows=2, cols=1,
@@ -590,43 +671,202 @@ elif page == "Guarantee Demo":
                               marker_color=colors_bar, showlegend=False), row=2, col=1)
         fig3.update_layout(**PLOTLY_LAYOUT, height=280)
         fig3.update_yaxes(range=[0, 1])
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
 
 # ------------------------------------------------------------------ #
 # BASELINES & ABLATIONS
 # ------------------------------------------------------------------ #
-elif page == "Baselines & Ablations":
-    section_header("Model comparison", "ATERNET vs baselines and ablation variants")
-    comp = load_comparison()
-    if comp is None:
-        st.info("Run `python -m src.evaluation.comparison_table` to generate comparison data.")
+# RESULTS & EVIDENCE
+# ------------------------------------------------------------------ #
+elif page == "Results & Evidence":
+    summary = load_summary()
+    section_header("Results & Evidence",
+                   "Multi-seed means ± std. Every number is read from docs/results_summary.json "
+                   "(rebuilt from the raw experiment outputs by build_results_summary.py).")
+    if summary is None:
+        st.info("Run `python build_results_summary.py` to generate docs/results_summary.json.")
         st.stop()
 
-    labels = {"model": "Model", "nrmse_pct": "nRMSE %", "nmae_pct": "nMAE %",
-              "r2": "R\u00b2", "picp": "PICP", "pinaw": "PINAW",
-              "winkler": "Winkler", "rmse_skill_vs_persistence": "Skill"}
-    cols = list(labels.keys())
-    rows = []
-    for row in comp:
-        r = {}
-        for c in cols:
-            v = row.get(c, float("nan"))
-            if isinstance(v, float) and v != v: r[labels[c]] = "\u2014"
-            elif isinstance(v, float): r[labels[c]] = f"{v:.2f}" if c in ("nrmse_pct", "nmae_pct") else f"{v:.4f}"
-            else: r[labels[c]] = v
-        rows.append(r)
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    measured = {k: v for k, v in summary["sites"].items() if not v["simulated"]}
+    site_key = st.radio("Site (measured PV)", list(measured),
+                        format_func=lambda k: measured[k]["title"], horizontal=True)
+    site = measured[site_key]
+    st.caption(site["note"])
 
-    models = [r["model"] for r in comp if isinstance(r.get("nrmse_pct"), (int, float)) and r["nrmse_pct"] == r["nrmse_pct"]]
-    nrmses = [r["nrmse_pct"] for r in comp if isinstance(r.get("nrmse_pct"), (int, float)) and r["nrmse_pct"] == r["nrmse_pct"]]
-    if models:
-        bar_c = [COLORS["p50"] if "full" in m.lower() or "CQR" in m else COLORS["muted"] for m in models]
-        fig = go.Figure(data=go.Bar(x=models, y=nrmses, marker_color=bar_c,
-                                     text=[f"{v:.2f}%" for v in nrmses], textposition="outside"))
-        fig.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="nRMSE %", xaxis_tickangle=-30)
+    main_rows = [r for r in site["rows"] if r["kind"] != "ablation"]
+    atern = next(r for r in main_rows if r["kind"] == "aternet")
+    baselines = [r for r in main_rows if r["kind"] == "baseline"]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("ATERNET nRMSE", f"{atern['nrmse_pct']['mean']:.2f}%",
+              help=f"mean over {atern['n_seeds']} seeds, std {atern['nrmse_pct']['std']:.3f}")
+    k2.metric("ATERNET Winkler", f"{atern['winkler']['mean']:.4f}")
+    k3.metric("ATERNET R²", f"{atern['r2']['mean']:.4f}")
+    k4.metric("Seeds", atern["n_seeds"])
+
+    st.markdown("**Accuracy and interval quality across seeds**")
+    st.dataframe([{
+        "Model": r["model"].strip(), "Seeds": r["n_seeds"],
+        "nRMSE % (lower better)": fmt_ms(r["nrmse_pct"], 3),
+        "Winkler (lower better)": fmt_ms(r["winkler"], 4),
+        "PINAW (interval width)": fmt_ms(r["pinaw"], 4),
+        "R²": fmt_ms(r["r2"], 4),
+        "PICP, all points": fmt_ms(r["picp"], 3),
+        "nRMSE per seed": ", ".join(f"{v:.2f}" for v in r["per_seed_nrmse"]),
+    } for r in main_rows], width="stretch", hide_index=True)
+    st.caption("PICP here counts night points (trivially covered), so it flatters coverage; see the "
+               "daytime figures below. Winkler penalises missed observations directly and is the fairer "
+               "joint measure of interval quality.")
+
+    st.markdown("**ATERNET compared with each baseline**")
+    st.dataframe([{"Baseline": b["model"],
+                   "Verdict (gap must exceed ~2 seed std to count)": verdict(atern, b)}
+                  for b in baselines], width="stretch", hide_index=True)
+
+    names = [r["model"].strip() for r in main_rows]
+    fig = go.Figure(data=go.Bar(
+        x=names, y=[r["nrmse_pct"]["mean"] for r in main_rows],
+        error_y=dict(type="data", array=[r["nrmse_pct"]["std"] for r in main_rows]),
+        marker_color=[COLORS["p50"] if r["kind"] == "aternet" else COLORS["muted"] for r in main_rows],
+        text=[f"{r['nrmse_pct']['mean']:.2f}" for r in main_rows], textposition="outside"))
+    fig.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="nRMSE % (mean ± std over seeds)",
+                      xaxis_tickangle=-20)
+    styled_axes(fig)
+    st.plotly_chart(fig, width="stretch")
+
+    cal_s = site.get("calibration")
+    if cal_s and cal_s.get("picp_daytime_before") is not None:
+        st.markdown("---")
+        section_header("Interval calibration (ATERNET, one trained model)",
+                       "Coverage of the P10–P90 interval on daytime points; nominal 0.80")
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Daytime coverage, raw", f"{cal_s['picp_daytime_before']:.3f}")
+        q2.metric("Daytime coverage, calibrated", f"{cal_s['picp_daytime_after']:.3f}",
+                  delta=f"{cal_s['picp_daytime_after'] - cal_s['picp_daytime_before']:+.3f}")
+        q3.metric("Winkler raw → calibrated",
+                  f"{cal_s['winkler_after']:.4f}", delta=f"{cal_s['winkler_after'] - cal_s['winkler_before']:+.4f}",
+                  delta_color="inverse")
+        st.caption("The baselines were not calibrated, so calibrated-ATERNET versus raw baselines is not a "
+                   "like-for-like comparison; the multi-seed table above uses raw intervals for everyone.")
+
+    abl = [r for r in site["rows"] if r["kind"] == "ablation"]
+    ref = next((r for r in site["rows"] if r["model"] == "ATERNET without EMA"), None)
+    if abl and ref:
+        st.markdown("---")
+        section_header("What each component contributes",
+                       "Ablations trained without EMA, compared with the same configuration without EMA")
+        rows, mattered = [], []
+        for r in abl:
+            gap = r["nrmse_pct"]["mean"] - ref["nrmse_pct"]["mean"]       # > 0: removing it hurts
+            tol = 2 * max(r["nrmse_pct"]["std"], ref["nrmse_pct"]["std"])
+            wgap = r["winkler"]["mean"] - ref["winkler"]["mean"]          # > 0: removing it hurts
+            wtol = 2 * max(r["winkler"]["std"], ref["winkler"]["std"])
+            hurts = gap > tol or wgap > wtol
+            helps = gap < -tol or wgap < -wtol
+            label = "hurts when removed" if hurts else ("helps when removed" if helps else "no measurable effect")
+            if hurts:
+                mattered.append(r["model"].replace("ablation:", "").strip())
+            rows.append({"Variant": r["model"].strip(), "nRMSE %": fmt_ms(r["nrmse_pct"], 3),
+                         "Δ nRMSE": f"{gap:+.3f}", "Winkler": fmt_ms(r["winkler"], 4),
+                         "Δ Winkler": f"{wgap:+.4f}", "PICP, all points": fmt_ms(r["picp"], 3),
+                         "Effect (beyond ~2 seed std)": label})
+        st.dataframe(rows, width="stretch", hide_index=True)
+        if mattered:
+            st.info("Measurable contribution only from: " + "; ".join(mattered) + ". Everything else is within "
+                    "seed noise on this data.")
+        else:
+            st.info("No single component showed a measurable contribution beyond seed noise.")
+
+    with st.expander("What these results do and do not show"):
+        st.markdown(
+            "- **Shows:** ATERNET is competitive with the strongest tabular baseline and beats PatchTST; "
+            "on the second region it is ahead of LightGBM by more than the seed spread.\n"
+            "- **Shows:** it is stable across seeds (very small std), unlike the LSTM baseline.\n"
+            "- **Does not show:** that the adaptive routing or regime specialisation improves accuracy; the "
+            "ablations above indicate the experts behave like an ensemble.\n"
+            "- **Limits:** two UK regions; baselines were not tuned beyond defaults; LightGBM improves with "
+            "denser training windows while ATERNET did not in our stride-2 test.")
+
+
+# ------------------------------------------------------------------ #
+# INDIA DEMO (SIMULATED)
+# ------------------------------------------------------------------ #
+elif page == "India Demo (Simulated)":
+    st.error("SIMULATED DATA — not measured. No open measured PV record exists for the VIT Vellore area, so "
+             "the 'observed' generation on this page is produced by a physical PV model driven by ERA5 "
+             "reanalysis weather for an illustrative 1 MWp plant. ATERNET's inputs are real multi-model "
+             "weather forecasts. Results show the system working for this location, not real-world accuracy.")
+    summary = load_summary()
+    vit = (summary or {}).get("sites", {}).get("vellore")
+    section_header("VIT Vellore — simulated plant", "Latitude 12.97°N, longitude 79.16°E")
+
+    if vit:
+        a = vit["rows"][0]
+        base = next((r for r in vit["rows"] if r["kind"] == "baseline"), None)
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric("ATERNET nRMSE", f"{a['nrmse_pct']['mean']:.2f}%")
+        v2.metric("ATERNET Winkler", f"{a['winkler']['mean']:.4f}")
+        v3.metric("LightGBM nRMSE", f"{base['nrmse_pct']['mean']:.2f}%" if base else "n/a")
+        v4.metric("LightGBM Winkler", f"{base['winkler']['mean']:.4f}" if base else "n/a")
+        cal_v = vit.get("calibration")
+        if cal_v and cal_v.get("picp_daytime_before") is not None:
+            st.caption(f"Single seed. Daytime interval coverage {cal_v['picp_daytime_before']:.3f} raw → "
+                       f"{cal_v['picp_daytime_after']:.3f} after calibration (nominal 0.80): the intervals are "
+                       "still somewhat too narrow in daylight on this site.")
+    else:
+        st.info("No Vellore results found. Run the Vellore workspace commands in the README, then "
+                "`python build_results_summary.py`.")
+
+    pred_path = VIT_DIR / "outputs" / "predictions" / "test_predictions.npz"
+    if pred_path.exists():
+        @st.cache_data
+        def load_vit_predictions():
+            return load_npz(pred_path)
+        vp = load_vit_predictions()
+        yv = vp["y_true"]
+        day = np.where(yv.max(axis=1) > 0.1)[0]
+        section_header("Forecast viewer", "P10–P90 forecast range against the simulated plant output")
+        options = day[::max(1, len(day) // 200)].tolist()
+        pick = st.select_slider("Test window", options=options, value=options[len(options) // 2])
+        steps = np.arange(1, yv.shape[1] + 1) * 0.5
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=np.concatenate([steps, steps[::-1]]),
+                                 y=np.concatenate([vp["p90"][pick], vp["p10"][pick][::-1]]),
+                                 fill="toself", fillcolor=COLORS["band"], line=dict(width=0),
+                                 name="P10–P90", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=steps, y=vp["p50"][pick], name="ATERNET P50",
+                                 line=dict(color=COLORS["p50"], width=2.5)))
+        fig.add_trace(go.Scatter(x=steps, y=yv[pick], name="Simulated plant output",
+                                 line=dict(color=COLORS["observed"], width=2, dash="dot")))
+        if "baseline" in vp:
+            fig.add_trace(go.Scatter(x=steps, y=vp["baseline"][pick], name="Persistence",
+                                     line=dict(color=COLORS["muted"], width=1.5, dash="dash")))
+        fig.update_layout(**PLOTLY_LAYOUT, height=380, xaxis_title="Hours ahead",
+                          yaxis_title="Output (fraction of 1 MWp)", yaxis_range=[-0.02, 1.02],
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+
+    plots = [("forecast_examples.png", "Forecast examples"),
+             ("reliability_diagram.png", "Reliability diagram"),
+             ("per_horizon_metrics.png", "Error by forecast horizon")]
+    shown = [(VIT_DIR / "outputs" / "plots" / f, cap) for f, cap in plots
+             if (VIT_DIR / "outputs" / "plots" / f).exists()]
+    if shown:
+        cols = st.columns(len(shown))
+        for col, (path, cap) in zip(cols, shown):
+            col.image(str(path), caption=cap + " (simulated site)", width="stretch")
+
+    with st.expander("How the simulation works"):
+        st.markdown(
+            "- **Simulated output:** P = peak × GHI/1000 × (1 − 0.004·(T_cell − 25)) × 0.88 "
+            "× soiling, clipped at peak/1.25, plus ~1% noise; T_cell = T_amb + 0.03125·GHI.\n"
+            "- **Why it is not circular:** the simulated output uses ERA5 *reanalysis* weather (what the weather "
+            "actually did); the model sees the *forecast* models (GFS, ICON, Météo-France, GEM). "
+            "The forecast-versus-actual error is real.\n"
+            "- **Limits:** no real measurements; one seed; accuracy numbers say how well the model learns this "
+            "simulator from forecasts.")
 
 
 # ------------------------------------------------------------------ #
@@ -650,7 +890,7 @@ elif page == "Training":
         fig.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Epoch", yaxis_title="Loss",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col2:
         st.markdown("**Expert gate share**")
@@ -664,7 +904,7 @@ elif page == "Training":
         fig2.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Epoch", yaxis_title="Gate weight",
                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig2)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
     col3, col4 = st.columns(2)
     with col3:
@@ -677,7 +917,7 @@ elif page == "Training":
         fig3.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Epoch",
                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig3)
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width="stretch")
 
     with col4:
         st.markdown("**Learning rate**")
@@ -685,4 +925,4 @@ elif page == "Training":
                                           line=dict(color=COLORS["slate"])))
         fig4.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Epoch", yaxis_title="LR")
         styled_axes(fig4)
-        st.plotly_chart(fig4, use_container_width=True)
+        st.plotly_chart(fig4, width="stretch")
