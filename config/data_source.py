@@ -29,7 +29,9 @@ DATA_SOURCE = "pvlive_openmeteo"
 
 # PV_Live region (PES / DNO licence area id). See src/phase1/regions.py.
 # 23 = NPG Yorkshire -- the region containing the original uk_pv site.
-PVLIVE_REGION_ID = 23
+import os
+
+PVLIVE_REGION_ID = int(os.environ.get("ATERNET_REGION_ID", 23))  # env override for other regions
 
 # Training period. The Open-Meteo historical-forecast archive has full
 # multi-model coverage from 2023 onward. END_DATE leaves the most recent

@@ -44,3 +44,6 @@ env/
 
 # Archived artifacts from earlier data sources
 archive/
+
+# Second-site / alternative workspaces
+workspaces/

@@ -11,7 +11,12 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # ---- Data ----
-DATA_DIR = ROOT_DIR / "data"
+# ATERNET_WORKSPACE moves data/, checkpoints/, outputs/, logs/ and experiments/
+# under another directory, so a second site can run the whole pipeline without
+# touching (or overwriting) the default workspace.
+_BASE = Path(os.environ["ATERNET_WORKSPACE"]).resolve() if os.environ.get("ATERNET_WORKSPACE") else ROOT_DIR
+
+DATA_DIR = _BASE / "data"
 RAW_DIR = DATA_DIR / "raw"
 RAW_PV_DIR = RAW_DIR / "pv"
 RAW_NWP_DIR = RAW_DIR / "nwp"
@@ -24,17 +29,17 @@ PROCESSED_DIR = Path(os.environ.get("ATERNET_PROCESSED_DIR", DATA_DIR / "process
 CACHE_DIR = DATA_DIR / "cache"
 
 # ---- Model / experiment artifacts ----
-CHECKPOINTS_DIR = ROOT_DIR / "checkpoints"
+CHECKPOINTS_DIR = _BASE / "checkpoints"
 
-OUTPUTS_DIR = ROOT_DIR / "outputs"
+OUTPUTS_DIR = _BASE / "outputs"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions"
 METRICS_DIR = OUTPUTS_DIR / "metrics"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
 PLOTS_DIR = OUTPUTS_DIR / "plots"
 ATTENTION_MAPS_DIR = OUTPUTS_DIR / "attention_maps"
 
-LOGS_DIR = ROOT_DIR / "logs"
-EXPERIMENTS_DIR = ROOT_DIR / "experiments"
+LOGS_DIR = _BASE / "logs"
+EXPERIMENTS_DIR = _BASE / "experiments"
 
 # ---- Phase 1 specific processed artifacts ----
 PV_CLEAN_PATH = INTERIM_DIR / "pv_clean.parquet"
