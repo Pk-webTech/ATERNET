@@ -108,6 +108,16 @@ st.markdown("""
     }
     #MainMenu, footer, header { visibility: hidden; }
     .stDataFrame { border-radius: 8px; overflow: hidden; }
+    table.score { width: 100%; border-collapse: collapse; margin: 6px 0 14px 0; font-size: 0.92rem; }
+    table.score th { text-align: left; background: #F1EFEA; color: #3B4252; padding: 8px 10px;
+                     border-bottom: 2px solid #E8A838; font-weight: 600; }
+    table.score td { padding: 9px 10px; border-bottom: 1px solid #ECECEC; vertical-align: top; }
+    table.score small { font-weight: 400; color: #6B7280; }
+    .bottom-line { background: #F3F8F4; border-left: 5px solid #1B7F4B; padding: 12px 16px;
+                   border-radius: 6px; margin: 8px 0 14px 0; font-size: 1.0rem; }
+    .bottom-line.neutral { background: #F6F6F2; border-left-color: #9A6B00; }
+    .intro-box { background: #F4F7FB; border: 1px solid #DCE6F2; border-radius: 8px;
+                 padding: 10px 14px; margin-bottom: 14px; font-size: 0.93rem; color: #2E3440; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -182,29 +192,182 @@ def fmt_ms(d, nd=3):
     return f"{d['mean']:.{nd}f} \u00b1 {d['std']:.{nd}f}"
 
 
-def verdict(atern, base):
+REGIME_PLAIN = {
+    "dawn_ramp": "Morning ramp-up",
+    "clear_peak": "Clear sunny midday",
+    "overcast": "Cloudy / overcast",
+    "volatile": "Patchy, changing clouds",
+}
+
+PAGE_LABELS = {
+    "Dashboard": "Overview",
+    "Results & Evidence": "Is ATERNET better?",
+    "India Demo (Simulated)": "India demo (simulated)",
+    "Live Forecast": "Live forecast",
+    "Forecast Explorer": "Explore forecasts",
+    "Routing & Experts": "How the experts work",
+    "Uncertainty": "How sure is the model?",
+    "Guarantee Demo": "Built-in safety checks",
+    "Training": "Training history",
+}
+
+PAGE_INTRO = {
+    "Dashboard": "ATERNET predicts how much electricity a solar plant will produce over the next 8 hours, "
+                 "and also gives a range of likely values, so you can see how sure it is. "
+                 "Start here for the headline numbers and a quick comparison with other models.",
+    "Results & Evidence": "This page answers one question: <b>is ATERNET better than other forecasting models?</b> "
+                          "Every model was trained several times (different random starts) so we can tell a real "
+                          "difference from luck. Green = ATERNET is better, yellow = about the same, red = worse.",
+    "India Demo (Simulated)": "A demonstration of ATERNET forecasting for the VIT Vellore area. "
+                              "<b>The plant's output here is simulated, not measured</b>, because no real solar "
+                              "data for this area is publicly available.",
+    "Live Forecast": "Forecasts for the next hours using the latest weather forecasts, and a replay of past "
+                     "forecasts scored against what really happened.",
+    "Forecast Explorer": "Look at individual forecasts one by one and compare them with what actually happened.",
+    "Routing & Experts": "ATERNET contains four small 'expert' models, each meant for a type of weather. "
+                         "This page shows how much the model trusts each one. In our tests they share the work "
+                         "fairly evenly.",
+    "Uncertainty": "A good forecast also says how sure it is. Here we check that the model's 'unsureness' really "
+                   "goes up when its errors are bigger, and that its forecast ranges contain the real value "
+                   "about as often as promised.",
+    "Guarantee Demo": "Three properties are built into the model's design and checked by automated tests. "
+                      "Use the slider to see each one hold on a real forecast.",
+    "Training": "How the model learned: the error went down over repeated rounds of training until it stopped "
+                "improving.",
+}
+
+GLOSSARY_MD = """
+- **Typical error (nRMSE)** – how far off the forecast usually is, as a % of the plant's full capacity.
+  Lower is better. A big miss counts more than a small one.
+- **Average error (nMAE)** – the average size of the miss, as a % of capacity. Lower is better.
+- **Forecast range (P10–P90)** – besides one best guess, the model gives a low and a high value. The real output
+  should land between them about 80% of the time.
+- **Range hit-rate (coverage, PICP)** – how often the real output really landed inside that range.
+  The target is 80%. We measure it in <i>daytime</i> only, because at night the output is 0 and always "inside".
+- **Range quality score (Winkler)** – one number that rewards a narrow range and punishes missing the real value.
+  Lower is better. It stops a model from cheating by drawing very wide ranges.
+- **Runs / seeds** – each model is trained several times from different random starts. If results barely change
+  between runs, the model is reliable.
+- **Better / about the same / worse** – we only say "better" or "worse" when the gap is bigger than the
+  normal run-to-run variation (about 2 standard deviations). Otherwise it is "about the same".
+- **Persistence** – the naive forecast "the next hours will look like right now". Beating it is the minimum bar.
+"""
+
+PILLS = {
+    "better":   ("ATERNET is better", "#1B7F4B"),
+    "same":     ("About the same", "#9A6B00"),
+    "worse":    ("ATERNET is worse", "#B83232"),
+    "lead1":    ("Looks better (only 1 test run)", "#3C7A9A"),
+    "trail1":   ("Looks worse (only 1 test run)", "#9A5A3C"),
+    "unstable": ("Other model unreliable", "#6B7280"),
+}
+
+
+def pill(status):
+    text, color = PILLS[status]
+    return (f'<span style="background:{color};color:white;padding:3px 10px;border-radius:12px;'
+            f'font-size:0.8rem;font-weight:600;white-space:nowrap">{text}</span>')
+
+
+def compare(atern, base, key):
     """
-    Plain-language comparison of ATERNET with one baseline on nRMSE and Winkler
-    (lower is better). A gap counts only if it exceeds ~2 seed standard deviations.
+    (status, pct): pct > 0 means ATERNET's value is lower (better) by that % of the other model's.
+    A win/loss is only declared when the gap exceeds ~2 seed standard deviations, and never from one run.
     """
     spread = max(base["per_seed_nrmse"]) - min(base["per_seed_nrmse"])
     if base["n_seeds"] > 1 and spread > 1.0:
-        seeds = ", ".join(f"{v:.2f}" for v in base["per_seed_nrmse"])
-        return f"Unstable across seeds (nRMSE per seed: {seeds}); no stable comparison"
-    out = []
-    for key, name in (("nrmse_pct", "nRMSE"), ("winkler", "Winkler")):
-        a, b = atern[key], base[key]
-        gap = b["mean"] - a["mean"]                      # > 0 means ATERNET is lower (better)
-        tol = 2 * max(a["std"], b["std"], 1e-9)
-        if atern["n_seeds"] < 2 or base["n_seeds"] < 2:
-            tol = abs(gap) + 1                           # single seed: never claim a win
-        if gap > tol:
-            out.append(f"{name}: ATERNET better by {gap / b['mean'] * 100:.1f}%")
-        elif gap < -tol:
-            out.append(f"{name}: ATERNET worse by {-gap / b['mean'] * 100:.1f}%")
+        return "unstable", 0.0
+    a, b = atern[key], base[key]
+    gap = b["mean"] - a["mean"]
+    pct = gap / b["mean"] * 100 if b["mean"] else 0.0
+    if atern["n_seeds"] < 2 or base["n_seeds"] < 2:
+        if abs(pct) < 1.0:
+            return "same", pct
+        return ("lead1" if gap > 0 else "trail1"), pct
+    tol = 2 * max(a["std"], b["std"], 1e-9)
+    if gap > tol:
+        return "better", pct
+    if gap < -tol:
+        return "worse", pct
+    return "same", pct
+
+
+def _words(status, pct, what):
+    if status == "better":
+        return f"{what} is {abs(pct):.0f}% lower (better)"
+    if status == "worse":
+        return f"{what} is {abs(pct):.0f}% higher (worse)"
+    if status == "lead1":
+        return f"{what} was {abs(pct):.0f}% lower, but from one test run only"
+    if status == "trail1":
+        return f"{what} was {abs(pct):.0f}% higher, but from one test run only"
+    return f"{what} is about the same"
+
+
+def _site_parts(site):
+    main = [r for r in site["rows"] if r["kind"] != "ablation"]
+    atern = next(r for r in main if r["kind"] == "aternet")
+    return main, atern, [r for r in main if r["kind"] == "baseline"]
+
+
+def scoreboard_html(site):
+    """Colour-coded table: ATERNET against each competitor, in plain words."""
+    _, atern, bases = _site_parts(site)
+    out = ['<table class="score"><tr><th>ATERNET compared with</th>'
+           '<th>Forecast accuracy<br><small>typical error, lower is better</small></th>'
+           '<th>Quality of the forecast range<br><small>range quality score, lower is better</small></th>'
+           '<th>In plain words</th></tr>']
+    for b in bases:
+        sa, pa = compare(atern, b, "nrmse_pct")
+        sr, pr = compare(atern, b, "winkler")
+        if sa == "unstable":
+            seeds = ", ".join(f"{v:.1f}" for v in b["per_seed_nrmse"])
+            words = (f"{b['model']} sometimes fails badly (typical error per run: {seeds}%), so a fair "
+                     "comparison is not possible. ATERNET's result barely changes between runs.")
         else:
-            out.append(f"{name}: tie (within seed noise)")
-    return "; ".join(out)
+            words = _words(sa, pa, "Typical error") + "; " + _words(sr, pr, "range quality score")
+        out.append(f"<tr><td><b>{b['model']}</b></td><td>{pill(sa)}</td><td>{pill(sr)}</td><td>{words}.</td></tr>")
+    out.append("</table>")
+    return "".join(out)
+
+
+def bottom_line(site):
+    """(is_positive, html) one-paragraph summary of where ATERNET stands on this site."""
+    _, atern, bases = _site_parts(site)
+    stable = [b for b in bases if compare(atern, b, "nrmse_pct")[0] != "unstable"]
+    unstable = [b["model"] for b in bases if b not in stable]
+    groups = {"better": [], "same": [], "worse": []}
+    for b in stable:
+        st_acc = compare(atern, b, "nrmse_pct")[0]
+        groups["better" if st_acc in ("better", "lead1") else "worse" if st_acc in ("worse", "trail1") else "same"].append(b["model"])
+    parts = []
+    if groups["better"]:
+        parts.append("<b>more accurate than</b> " + ", ".join(groups["better"]))
+    if groups["same"]:
+        parts.append("<b>about as accurate as</b> " + ", ".join(groups["same"]))
+    if groups["worse"]:
+        parts.append("<b>less accurate than</b> " + ", ".join(groups["worse"]))
+    text = "On accuracy, ATERNET is " + "; ".join(parts) + "." if parts else "No stable competitor to compare with."
+    rng_better = [b["model"] for b in stable if compare(atern, b, "winkler")[0] in ("better", "lead1")]
+    if rng_better:
+        text += " Its forecast ranges are scored better than " + ", ".join(rng_better) + "."
+    if unstable:
+        text += " " + ", ".join(unstable) + " is too unreliable to compare fairly."
+    return (not groups["worse"] and bool(groups["better"] or rng_better)), text
+
+
+def bar_chart(rows, key, title, nd):
+    """Bars with run-to-run variation as error bars; ATERNET highlighted."""
+    names = [r["model"].strip() for r in rows]
+    fig = go.Figure(data=go.Bar(
+        x=names, y=[r[key]["mean"] for r in rows],
+        error_y=dict(type="data", array=[r[key]["std"] for r in rows]),
+        marker_color=[COLORS["p50"] if r["kind"] == "aternet" else COLORS["muted"] for r in rows],
+        text=[f"{r[key]['mean']:.{nd}f}" for r in rows], textposition="outside"))
+    fig.update_layout(**PLOTLY_LAYOUT, height=330, title=dict(text=title, font=dict(size=14)),
+                      yaxis_title="shorter bar = better", xaxis_tickangle=-15)
+    styled_axes(fig)
+    return fig
 
 
 def _with_skip(model, y_routed, x_seq, x_nwp):
@@ -239,12 +402,15 @@ with st.sidebar:
     st.markdown("## ATERNET")
     st.caption("Adaptive Temporal Expert Routing Network\nfor Probabilistic Solar Power Forecasting")
     st.markdown("---")
-    page = st.radio("", [
-        "Dashboard", "Results & Evidence", "India Demo (Simulated)", "Live Forecast",
-        "Forecast Explorer", "Routing & Experts", "Uncertainty", "Guarantee Demo", "Training",
-    ], label_visibility="collapsed")
+    page = st.radio("Page", list(PAGE_LABELS), format_func=lambda k: PAGE_LABELS[k],
+                    label_visibility="collapsed")
     st.markdown("---")
     st.caption("BCSE497J Capstone Project\nVIT Vellore")
+
+
+st.markdown(f'<div class="intro-box">{PAGE_INTRO[page]}</div>', unsafe_allow_html=True)
+with st.expander("What do these words mean? (plain-language glossary)"):
+    st.markdown(GLOSSARY_MD, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------ #
@@ -252,73 +418,99 @@ with st.sidebar:
 # ------------------------------------------------------------------ #
 if page == "Dashboard":
     st.markdown("# ATERNET")
-    n_params = sum(p.numel() for p in load_model()[0].parameters())
-    st.markdown("Probabilistic solar power forecasting with uncertainty-aware expert routing. "
-                f"{n_params:,} parameters, zero quantile-crossing violations on the test set.")
+    st.markdown("**Solar power forecasting that also tells you how sure it is.**")
 
     metrics = load_metrics()
     h = metrics["headline"]
     cal = load_calibration() or {}
+    n_params = sum(p.numel() for p in load_model()[0].parameters())
 
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("nRMSE", f"{h['nrmse_pct']:.2f}%")
-    c2.metric("nMAE", f"{h['nmae_pct']:.2f}%")
-    c3.metric("R\u00b2", f"{h['r2']:.4f}")
-    c4.metric("PICP (all points)", f"{h['picp']:.3f}",
-              help="Includes night points, which are trivially covered, so this flatters coverage.")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Typical error", f"{h['nrmse_pct']:.2f}%",
+              help="How far off the forecast usually is, as a % of the plant's full capacity. Lower is better. "
+                   "(Technical name: nRMSE.)")
+    c2.metric("Average error", f"{h['nmae_pct']:.2f}%",
+              help="The average size of the miss, as a % of capacity. Lower is better. (Technical name: nMAE.)")
+    c3.metric("Follows reality", f"{h['r2']:.3f}",
+              help="1.000 would be a perfect match with what really happened. (Technical name: R².)")
     day_after = cal.get("picp_daytime_after")
-    c5.metric("PICP (daytime, calibrated)", f"{day_after:.3f}" if day_after is not None else "n/a",
-              help="Coverage of the P10-P90 interval on daytime points after conformal calibration (nominal 0.80).")
-    c6.metric("Winkler (raw)", f"{h['winkler']:.4f}")
-    c7.metric("Skill vs Persist.", f"{h.get('rmse_skill_vs_persistence', 0):.3f}")
-    st.caption("Single trained model (seed 42), Yorkshire test split. For the multi-seed comparison with "
-               "LightGBM / PatchTST / LSTM and the second region, open **Results & Evidence**.")
+    c4.metric("Range hit-rate (day)", f"{day_after * 100:.0f}%" if day_after is not None else "n/a",
+              help="How often the real output landed inside the forecast range during daytime. "
+                   "The target is 80%. (Technical name: PICP, measured on daytime points after calibration.)")
+    skill = h.get("rmse_skill_vs_persistence", 0)
+    c5.metric("Error cut vs. naive guess", f"{skill * 100:.0f}%",
+              help="Compared with the naive forecast 'the next hours will look like right now', ATERNET's "
+                   "error is this much lower.")
+    st.caption(f"One trained model on the Yorkshire test period ({metrics['n_samples']:,} forecasts, "
+               f"{n_params:,} adjustable numbers). The forecast range never crosses itself (0 violations).")
 
-    st.markdown("")
+    summary = load_summary()
+    st.markdown("---")
+    section_header("How does ATERNET compare with other models?",
+                   "Each model was trained several times; we only call it better or worse when the gap is larger "
+                   "than normal run-to-run variation.")
+    if summary:
+        for key in ("south_west", "yorkshire"):
+            site = summary["sites"].get(key)
+            if not site:
+                continue
+            good, text = bottom_line(site)
+            st.markdown(f"**{site['title']}**")
+            st.markdown(f'<div class="bottom-line{"" if good else " neutral"}">{text}</div>',
+                        unsafe_allow_html=True)
+            st.markdown(scoreboard_html(site), unsafe_allow_html=True)
+        st.caption("Open **Is ATERNET better?** in the left menu for charts, details and what each part of the "
+                   "model contributes.")
+    else:
+        st.info("Run `python build_results_summary.py` to generate the comparison.")
+
+    st.markdown("---")
     col_left, col_right = st.columns([3, 2])
 
     with col_left:
-        section_header("Forecast sample")
+        section_header("An example forecast", "The shaded band is where the model expects the real output to land "
+                                              "about 80% of the time.")
         preds = load_predictions()
         y = preds["y_true"]
         daytime = np.where(y.max(axis=1) > 0.1)[0]
         idx = daytime[len(daytime) // 3] if len(daytime) > 10 else 0
-        steps = np.arange(1, y.shape[1] + 1)
+        hours = np.arange(1, y.shape[1] + 1) * 0.5
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=np.concatenate([steps, steps[::-1]]),
+            x=np.concatenate([hours, hours[::-1]]),
             y=np.concatenate([preds["p90"][idx], preds["p10"][idx][::-1]]),
             fill="toself", fillcolor=COLORS["band"],
-            line=dict(width=0), name="P10\u2013P90", hoverinfo="skip",
+            line=dict(width=0), name="Likely range (80%)", hoverinfo="skip",
         ))
-        fig.add_trace(go.Scatter(x=steps, y=preds["p50"][idx], mode="lines",
-                                  name="P50", line=dict(color=COLORS["p50"], width=2.5)))
-        fig.add_trace(go.Scatter(x=steps, y=y[idx], mode="lines+markers",
-                                  name="Observed", line=dict(color=COLORS["observed"], width=2, dash="dot"),
+        fig.add_trace(go.Scatter(x=hours, y=preds["p50"][idx], mode="lines",
+                                  name="Best guess", line=dict(color=COLORS["p50"], width=2.5)))
+        fig.add_trace(go.Scatter(x=hours, y=y[idx], mode="lines+markers",
+                                  name="What actually happened", line=dict(color=COLORS["observed"], width=2, dash="dot"),
                                   marker=dict(size=4)))
         fig.update_layout(**PLOTLY_LAYOUT, height=340,
-                          xaxis_title="Horizon step", yaxis_title="pv_norm",
+                          xaxis_title="Hours ahead", yaxis_title="Plant output (fraction of capacity)",
                           yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
         st.plotly_chart(fig, width="stretch")
 
     with col_right:
-        section_header("Per-regime accuracy and coverage")
+        section_header("By weather situation")
         pr = metrics.get("per_regime", {})
         cal_pr = cal.get("per_regime_comparison", {})
-        regime_data = [{"Regime": rn, "n": m["n"], "nRMSE %": round(m["nrmse_pct"], 2),
-                        "PICP (all pts)": round(m["picp"], 3),
-                        "Daytime PICP (calibrated)": (round(cal_pr[rn]["picp_daytime_after"], 3)
-                                                      if rn in cal_pr and "picp_daytime_after" in cal_pr[rn] else "n/a")}
+        regime_data = [{"Weather": REGIME_PLAIN.get(rn, rn), "Cases": m["n"],
+                        "Typical error %": round(m["nrmse_pct"], 2),
+                        "Range hit-rate (day)": (f"{cal_pr[rn]['picp_daytime_after'] * 100:.0f}%"
+                                                 if rn in cal_pr and cal_pr[rn].get("picp_daytime_after") is not None else "n/a")}
                        for rn, m in pr.items() if m.get("n", 0) > 0]
         if regime_data:
             st.dataframe(regime_data, width="stretch", hide_index=True)
-        section_header("Guarantees")
-        st.markdown("Three structural claims, each enforced by construction and verified by named tests:\n\n"
-                    "1. P10 \u2264 P50 \u2264 P90 always (softplus width)\n"
-                    "2. Interval width non-decreasing in \u03c3_total\n"
-                    "3. Routing softens under higher uncertainty")
+        section_header("Built-in safety checks")
+        st.markdown("Three properties are built into the design and tested automatically:\n\n"
+                    "1. The low value of the range is never above the best guess, and the high value never below it\n"
+                    "2. The range gets wider when the model is less sure\n"
+                    "3. The experts' votes spread out when the model is less sure\n\n"
+                    "See them work in **Built-in safety checks**.")
 
 
 # ------------------------------------------------------------------ #
@@ -420,21 +612,21 @@ elif page == "Live Forecast":
 # FORECAST EXPLORER
 # ------------------------------------------------------------------ #
 elif page == "Forecast Explorer":
-    section_header("Forecast explorer", "Browse test windows with P10/P50/P90 intervals")
+    section_header("Explore forecasts", "Pick any test case. The shaded band is where the model expects the real output to land about 80% of the time; the line is its best guess.")
     preds = load_predictions()
     y = preds["y_true"]
     regime_ids = preds["regime_id"]
 
     col_ctrl, col_chart = st.columns([1, 3])
     with col_ctrl:
-        regime_filter = st.selectbox("Regime", ["All"] + list(ID_TO_REGIME.values()))
+        regime_filter = st.selectbox("Weather situation (regime)", ["All"] + list(ID_TO_REGIME.values()))
         valid_idx = np.arange(len(y)) if regime_filter == "All" else \
             np.where(regime_ids == [k for k, v in ID_TO_REGIME.items() if v == regime_filter][0])[0]
         daytime_idx = valid_idx[y[valid_idx].max(axis=1) > 0.05]
         if len(daytime_idx) == 0:
             st.warning("No daytime windows for this regime.")
             st.stop()
-        window_pos = st.slider("Window", 0, len(daytime_idx) - 1, 0)
+        window_pos = st.slider("Test case", 0, len(daytime_idx) - 1, 0)
         wi = daytime_idx[window_pos]
         rname = ID_TO_REGIME.get(int(regime_ids[wi]), "?")
         st.markdown(regime_tag(rname), unsafe_allow_html=True)
@@ -476,14 +668,14 @@ elif page == "Forecast Explorer":
 # ROUTING & EXPERTS
 # ------------------------------------------------------------------ #
 elif page == "Routing & Experts":
-    section_header("Expert routing", "Gate weight distribution across regime-specialised experts")
+    section_header("How the experts work", "ATERNET has four small expert models, one for each type of weather. A gate decides how much to trust each one. In our tests the trust is shared fairly evenly.")
     preds = load_predictions()
     gate = preds["gate_weights"]
     regime_ids = preds["regime_id"]
 
     col1, col2 = st.columns([3, 2])
     with col1:
-        st.markdown("**Gate weight matrix**")
+        st.markdown("**How much each expert is trusted, by weather situation**")
         n_regimes = len(ID_TO_REGIME)
         mat = np.zeros((n_regimes, gate.shape[1]))
         regime_names = [ID_TO_REGIME[i] for i in range(n_regimes)]
@@ -498,7 +690,7 @@ elif page == "Routing & Experts":
         st.plotly_chart(fig, width="stretch")
 
     with col2:
-        st.markdown("**Argmax share**")
+        st.markdown("**Which expert is trusted most, and how often**")
         argmax = gate.argmax(axis=1)
         shares = {EXPERT_ORDER[k]: float(np.mean(argmax == k)) for k in range(len(EXPERT_ORDER))}
         fig2 = go.Figure(data=go.Bar(
@@ -511,8 +703,8 @@ elif page == "Routing & Experts":
         st.plotly_chart(fig2, width="stretch")
 
     st.markdown("---")
-    section_header("Per-window routing")
-    wi2 = st.slider("Window", 0, len(gate) - 1, 0, key="gate_slider")
+    section_header("Trust in each expert for one case")
+    wi2 = st.slider("Test case", 0, len(gate) - 1, 0, key="gate_slider")
     gc1, gc2 = st.columns([1, 3])
     with gc1:
         st.markdown(regime_tag(ID_TO_REGIME.get(int(regime_ids[wi2]), "?")), unsafe_allow_html=True)
@@ -533,8 +725,9 @@ elif page == "Routing & Experts":
 # UNCERTAINTY
 # ------------------------------------------------------------------ #
 elif page == "Uncertainty":
-    section_header("Dual-uncertainty diagnostics",
-                   "Core claim: the fused uncertainty signal tracks realised forecast error")
+    section_header("How sure is the model?",
+                   "The model gives every forecast an 'unsureness' score and draws a wider range when it is "
+                   "less sure. Below we check that this score really goes up when the errors are bigger.")
     preds = load_predictions()
     metrics = load_metrics()
     y = preds["y_true"]
@@ -546,19 +739,19 @@ elif page == "Uncertainty":
     r = metrics["routing"]
 
     mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("corr(\u03c3, |error|)", f"{r.get('corr_sigma_total_vs_abs_error', 0):.3f}")
-    mc2.metric("corr(width, |error|)", f"{r.get('corr_interval_width_vs_abs_error', 0):.3f}")
-    mc3.metric("Mean \u03b1", f"{r.get('mean_alpha', 0):.3f}")
+    mc1.metric("Does 'unsure' predict bigger errors?", f"{r.get('corr_sigma_total_vs_abs_error', 0):.3f}")
+    mc2.metric("Do wider ranges go with bigger errors?", f"{r.get('corr_interval_width_vs_abs_error', 0):.3f}")
+    mc3.metric("Weather-vs-model mix (\u03b1)", f"{r.get('mean_alpha', 0):.3f}")
 
     col1, col2 = st.columns(2)
-    for col, xdata, xlabel in [(col1, sigma, "\u03c3_total"), (col2, width, "Interval width")]:
+    for col, xdata, xlabel in [(col1, sigma, "Model's unsureness score"), (col2, width, "Width of the forecast range")]:
         with col:
             fig = go.Figure(data=go.Scatter(
                 x=xdata, y=abs_err, mode="markers",
                 marker=dict(size=4, opacity=0.45, color=rc),
                 hovertemplate=f"{xlabel}=%{{x:.3f}}<br>|err|=%{{y:.4f}}<extra></extra>"))
             fig.update_layout(**PLOTLY_LAYOUT, height=380,
-                              xaxis_title=xlabel, yaxis_title="Mean |error|")
+                              xaxis_title=xlabel, yaxis_title="Average error of that forecast")
             styled_axes(fig)
             st.plotly_chart(fig, width="stretch")
 
@@ -588,15 +781,15 @@ elif page == "Uncertainty":
 # GUARANTEE DEMO
 # ------------------------------------------------------------------ #
 elif page == "Guarantee Demo":
-    section_header("Architectural guarantees",
-                   "Slide \u03c3_total to see all three guarantees respond on a live forward pass")
+    section_header("Built-in safety checks",
+                   "Move the slider to change how unsure the model is, and watch all three checks hold.")
     model, _ = load_model()
     ds = load_test_data()
     daytime = np.where(ds.y.numpy().max(axis=1) > 0.1)[0]
 
     wi3 = st.selectbox("Test window", daytime[:50].tolist(),
                        format_func=lambda x: f"Window {x} \u2014 {ID_TO_REGIME.get(int(ds.regime_id[x].item()), '?')}")
-    sigma_override = st.slider("\u03c3_total override", 0.0, 2.0, 0.5, 0.05)
+    sigma_override = st.slider("How unsure the model is (override)", 0.0, 2.0, 0.5, 0.05)
 
     x_seq, x_nwp, x_sigma = ds.x_seq[wi3:wi3+1], ds.x_nwp[wi3:wi3+1], ds.x_sigma[wi3:wi3+1]
     with torch.no_grad():
@@ -619,9 +812,9 @@ elif page == "Guarantee Demo":
 
     g1, g2, g3 = st.columns(3)
     with g1:
-        st.markdown("**G1: Quantiles never cross**")
+        st.markdown("**Check 1: the range never flips upside down**")
         p10_m, p50_m, p90_m = (q_manual[k].numpy().ravel() for k in ("p10", "p50", "p90"))
-        st.metric("Violations", int(np.sum(p10_m > p50_m + 1e-6)) + int(np.sum(p50_m > p90_m + 1e-6)))
+        st.metric("Times it broke", int(np.sum(p10_m > p50_m + 1e-6)) + int(np.sum(p50_m > p90_m + 1e-6)))
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=np.concatenate([steps, steps[::-1]]),
@@ -637,7 +830,7 @@ elif page == "Guarantee Demo":
         st.plotly_chart(fig, width="stretch")
 
     with g2:
-        st.markdown("**G2: Width grows with \u03c3**")
+        st.markdown("**Check 2: the range widens when the model is less sure**")
         sigmas_sweep = np.linspace(0, 2, 25)
         widths_sweep = []
         for s in sigmas_sweep:
@@ -646,7 +839,7 @@ elif page == "Guarantee Demo":
                      emb["h_nwp"], torch.tensor([s], dtype=torch.float32))
             widths_sweep.append(float((q_s["p90"] - q_s["p10"]).mean()))
         monotone = all(widths_sweep[i] <= widths_sweep[i+1] + 1e-6 for i in range(len(widths_sweep)-1))
-        st.metric("Monotone", "Yes" if monotone else "No")
+        st.metric("Always widens?", "Yes" if monotone else "No")
         fig2 = go.Figure(data=go.Scatter(x=sigmas_sweep, y=widths_sweep, mode="lines",
                                           line=dict(color=COLORS["p50"], width=2.5)))
         fig2.add_vline(x=sigma_override, line_dash="dash", line_color=COLORS["observed"],
@@ -656,12 +849,12 @@ elif page == "Guarantee Demo":
         st.plotly_chart(fig2, width="stretch")
 
     with g3:
-        st.markdown("**G3: Routing softens**")
+        st.markdown("**Check 3: the experts' votes even out when unsure**")
         st.caption("The final model uses a residual gate that stays close to uniform routing, so the shift is "
                    "small. The guarantee is structural (temperature rises with \u03c3), not a claim that "
                    "routing drives accuracy.")
         T_val = float(T_manual.item() if hasattr(T_manual, 'item') else T_manual)
-        st.metric("Temperature", f"{T_val:.3f}")
+        st.metric("Vote-spreading level", f"{T_val:.3f}")
         fig3 = make_subplots(rows=2, cols=1,
                               subplot_titles=[f"Real \u03c3 (T={real_T:.2f})", f"\u03c3={sigma_override:.2f} (T={T_val:.2f})"],
                               vertical_spacing=0.3)
@@ -681,141 +874,137 @@ elif page == "Guarantee Demo":
 # ------------------------------------------------------------------ #
 elif page == "Results & Evidence":
     summary = load_summary()
-    section_header("Results & Evidence",
-                   "Multi-seed means ± std. Every number is read from docs/results_summary.json "
-                   "(rebuilt from the raw experiment outputs by build_results_summary.py).")
     if summary is None:
         st.info("Run `python build_results_summary.py` to generate docs/results_summary.json.")
         st.stop()
 
     measured = {k: v for k, v in summary["sites"].items() if not v["simulated"]}
-    site_key = st.radio("Site (measured PV)", list(measured),
+    site_key = st.radio("Which solar region?", list(measured),
                         format_func=lambda k: measured[k]["title"], horizontal=True)
     site = measured[site_key]
+    main_rows, atern, baselines = _site_parts(site)
     st.caption(site["note"])
 
-    main_rows = [r for r in site["rows"] if r["kind"] != "ablation"]
-    atern = next(r for r in main_rows if r["kind"] == "aternet")
-    baselines = [r for r in main_rows if r["kind"] == "baseline"]
+    good, text = bottom_line(site)
+    section_header("The short answer")
+    st.markdown(f'<div class="bottom-line{"" if good else " neutral"}">{text}</div>', unsafe_allow_html=True)
+    st.markdown(scoreboard_html(site), unsafe_allow_html=True)
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("ATERNET nRMSE", f"{atern['nrmse_pct']['mean']:.2f}%",
-              help=f"mean over {atern['n_seeds']} seeds, std {atern['nrmse_pct']['std']:.3f}")
-    k2.metric("ATERNET Winkler", f"{atern['winkler']['mean']:.4f}")
-    k3.metric("ATERNET R²", f"{atern['r2']['mean']:.4f}")
-    k4.metric("Seeds", atern["n_seeds"])
+    section_header("The same comparison as charts", "Whiskers show how much each model's result changes between "
+                                                   "training runs. Shorter bar = better.")
+    c_left, c_right = st.columns(2)
+    c_left.plotly_chart(bar_chart(main_rows, "nrmse_pct", "Typical error (%)", 2), width="stretch")
+    c_right.plotly_chart(bar_chart(main_rows, "winkler", "Range quality score", 4), width="stretch")
 
-    st.markdown("**Accuracy and interval quality across seeds**")
-    st.dataframe([{
-        "Model": r["model"].strip(), "Seeds": r["n_seeds"],
-        "nRMSE % (lower better)": fmt_ms(r["nrmse_pct"], 3),
-        "Winkler (lower better)": fmt_ms(r["winkler"], 4),
-        "PINAW (interval width)": fmt_ms(r["pinaw"], 4),
-        "R²": fmt_ms(r["r2"], 4),
-        "PICP, all points": fmt_ms(r["picp"], 3),
-        "nRMSE per seed": ", ".join(f"{v:.2f}" for v in r["per_seed_nrmse"]),
-    } for r in main_rows], width="stretch", hide_index=True)
-    st.caption("PICP here counts night points (trivially covered), so it flatters coverage; see the "
-               "daytime figures below. Winkler penalises missed observations directly and is the fairer "
-               "joint measure of interval quality.")
-
-    st.markdown("**ATERNET compared with each baseline**")
-    st.dataframe([{"Baseline": b["model"],
-                   "Verdict (gap must exceed ~2 seed std to count)": verdict(atern, b)}
-                  for b in baselines], width="stretch", hide_index=True)
-
-    names = [r["model"].strip() for r in main_rows]
-    fig = go.Figure(data=go.Bar(
-        x=names, y=[r["nrmse_pct"]["mean"] for r in main_rows],
-        error_y=dict(type="data", array=[r["nrmse_pct"]["std"] for r in main_rows]),
-        marker_color=[COLORS["p50"] if r["kind"] == "aternet" else COLORS["muted"] for r in main_rows],
-        text=[f"{r['nrmse_pct']['mean']:.2f}" for r in main_rows], textposition="outside"))
-    fig.update_layout(**PLOTLY_LAYOUT, height=380, yaxis_title="nRMSE % (mean ± std over seeds)",
-                      xaxis_tickangle=-20)
-    styled_axes(fig)
-    st.plotly_chart(fig, width="stretch")
+    with st.expander("Show the detailed numbers"):
+        st.dataframe([{
+            "Model": r["model"].strip(), "Training runs": r["n_seeds"],
+            "Typical error % (nRMSE)": fmt_ms(r["nrmse_pct"], 3),
+            "Range quality score (Winkler)": fmt_ms(r["winkler"], 4),
+            "Range width (PINAW)": fmt_ms(r["pinaw"], 4),
+            "Follows reality (R²)": fmt_ms(r["r2"], 4),
+            "Range hit-rate, all hours (PICP)": fmt_ms(r["picp"], 3),
+            "Typical error in each run": ", ".join(f"{v:.2f}" for v in r["per_seed_nrmse"]),
+        } for r in main_rows], width="stretch", hide_index=True)
+        st.caption("The 'all hours' hit-rate includes night, when the output is 0 and always counts as a hit, so "
+                   "it looks better than it is. Daytime hit-rate is shown below.")
 
     cal_s = site.get("calibration")
     if cal_s and cal_s.get("picp_daytime_before") is not None:
         st.markdown("---")
-        section_header("Interval calibration (ATERNET, one trained model)",
-                       "Coverage of the P10–P90 interval on daytime points; nominal 0.80")
+        section_header("Does the forecast range hold what it promises?",
+                       "The range is meant to contain the real output 80% of the time. Checked in daytime only.")
         q1, q2, q3 = st.columns(3)
-        q1.metric("Daytime coverage, raw", f"{cal_s['picp_daytime_before']:.3f}")
-        q2.metric("Daytime coverage, calibrated", f"{cal_s['picp_daytime_after']:.3f}",
-                  delta=f"{cal_s['picp_daytime_after'] - cal_s['picp_daytime_before']:+.3f}")
-        q3.metric("Winkler raw → calibrated",
-                  f"{cal_s['winkler_after']:.4f}", delta=f"{cal_s['winkler_after'] - cal_s['winkler_before']:+.4f}",
-                  delta_color="inverse")
-        st.caption("The baselines were not calibrated, so calibrated-ATERNET versus raw baselines is not a "
-                   "like-for-like comparison; the multi-seed table above uses raw intervals for everyone.")
+        q1.metric("Before calibration", f"{cal_s['picp_daytime_before'] * 100:.0f}%",
+                  help="The model's raw ranges were a bit too narrow.")
+        q2.metric("After calibration", f"{cal_s['picp_daytime_after'] * 100:.0f}%",
+                  delta=f"{(cal_s['picp_daytime_after'] - cal_s['picp_daytime_before']) * 100:+.0f} points",
+                  help="Calibration widens the ranges slightly, using data the model did not train on.")
+        q3.metric("Target", "80%")
+        st.caption("Calibration was applied to ATERNET only. The comparison tables above use everyone's raw ranges, "
+                   "so they are fair.")
 
     abl = [r for r in site["rows"] if r["kind"] == "ablation"]
     ref = next((r for r in site["rows"] if r["model"] == "ATERNET without EMA"), None)
     if abl and ref:
         st.markdown("---")
-        section_header("What each component contributes",
-                       "Ablations trained without EMA, compared with the same configuration without EMA")
+        section_header("Which parts of ATERNET actually help?",
+                       "We switched off one part at a time and checked whether results got worse.")
+        ABL_PLAIN = {
+            "no dense expert loss": "Without the extra training signal given to every expert",
+            "no gate (uniform average)": "Without the gate (all experts always trusted equally)",
+            "fixed temperature": "Without the 'spread votes when unsure' control",
+            "fixed interval width": "Without letting the range width follow the model's unsureness",
+            "sigma_NWP only": "Using only the weather-forecast disagreement as the unsureness signal",
+            "sigma_expert only": "Using only the experts' disagreement as the unsureness signal",
+            "single expert": "Using one expert instead of four",
+            "no regime weights": "Without extra training weight on each expert's own weather type",
+        }
         rows, mattered = [], []
         for r in abl:
-            gap = r["nrmse_pct"]["mean"] - ref["nrmse_pct"]["mean"]       # > 0: removing it hurts
+            gap = r["nrmse_pct"]["mean"] - ref["nrmse_pct"]["mean"]
             tol = 2 * max(r["nrmse_pct"]["std"], ref["nrmse_pct"]["std"])
-            wgap = r["winkler"]["mean"] - ref["winkler"]["mean"]          # > 0: removing it hurts
+            wgap = r["winkler"]["mean"] - ref["winkler"]["mean"]
             wtol = 2 * max(r["winkler"]["std"], ref["winkler"]["std"])
             hurts = gap > tol or wgap > wtol
             helps = gap < -tol or wgap < -wtol
-            label = "hurts when removed" if hurts else ("helps when removed" if helps else "no measurable effect")
+            name = ABL_PLAIN.get(r["model"].replace("ablation:", "").strip(), r["model"].strip())
             if hurts:
-                mattered.append(r["model"].replace("ablation:", "").strip())
-            rows.append({"Variant": r["model"].strip(), "nRMSE %": fmt_ms(r["nrmse_pct"], 3),
-                         "Δ nRMSE": f"{gap:+.3f}", "Winkler": fmt_ms(r["winkler"], 4),
-                         "Δ Winkler": f"{wgap:+.4f}", "PICP, all points": fmt_ms(r["picp"], 3),
-                         "Effect (beyond ~2 seed std)": label})
+                mattered.append(name)
+            rows.append({"Part removed": name,
+                         "Typical error change": f"{gap:+.3f} points",
+                         "Range quality change": f"{wgap:+.4f}",
+                         "Verdict": ("Removing it makes things worse" if hurts else
+                                     "Removing it makes things better" if helps else "No clear difference")})
         st.dataframe(rows, width="stretch", hide_index=True)
         if mattered:
-            st.info("Measurable contribution only from: " + "; ".join(mattered) + ". Everything else is within "
-                    "seed noise on this data.")
+            st.info("Only one change clearly mattered: **" + "; ".join(mattered) + "**. "
+                    "The other parts made no measurable difference on this data, so we do not claim they improve "
+                    "accuracy.")
         else:
-            st.info("No single component showed a measurable contribution beyond seed noise.")
+            st.info("No single part showed a clear effect beyond run-to-run variation.")
 
     with st.expander("What these results do and do not show"):
         st.markdown(
-            "- **Shows:** ATERNET is competitive with the strongest tabular baseline and beats PatchTST; "
-            "on the second region it is ahead of LightGBM by more than the seed spread.\n"
-            "- **Shows:** it is stable across seeds (very small std), unlike the LSTM baseline.\n"
-            "- **Does not show:** that the adaptive routing or regime specialisation improves accuracy; the "
-            "ablations above indicate the experts behave like an ensemble.\n"
-            "- **Limits:** two UK regions; baselines were not tuned beyond defaults; LightGBM improves with "
-            "denser training windows while ATERNET did not in our stride-2 test.")
+            "- **They show:** ATERNET is as accurate as the best competitor tested and clearly more accurate than "
+            "PatchTST; on the second region it is ahead of LightGBM by more than the run-to-run variation.\n"
+            "- **They show:** ATERNET gives almost the same result every time it is trained; the LSTM does not.\n"
+            "- **They do not show:** that the 'expert' structure or the gate improves accuracy; the switch-off tests "
+            "above say it does not.\n"
+            "- **Limits:** two regions in England; competitors were not specially tuned; LightGBM improves when "
+            "given twice as many training examples, while ATERNET did not in our test.")
 
 
 # ------------------------------------------------------------------ #
 # INDIA DEMO (SIMULATED)
 # ------------------------------------------------------------------ #
 elif page == "India Demo (Simulated)":
-    st.error("SIMULATED DATA — not measured. No open measured PV record exists for the VIT Vellore area, so "
-             "the 'observed' generation on this page is produced by a physical PV model driven by ERA5 "
-             "reanalysis weather for an illustrative 1 MWp plant. ATERNET's inputs are real multi-model "
-             "weather forecasts. Results show the system working for this location, not real-world accuracy.")
+    st.error("SIMULATED DATA, NOT MEASURED. No open measured solar data exists for the VIT Vellore area, so the "
+             "'what actually happened' line on this page comes from a physical solar-panel model driven by real "
+             "past weather, for an imaginary 1 MW plant. The forecasts themselves use real weather forecasts. "
+             "This shows the system working for this location; it is not a real-world accuracy result.")
     summary = load_summary()
     vit = (summary or {}).get("sites", {}).get("vellore")
-    section_header("VIT Vellore — simulated plant", "Latitude 12.97°N, longitude 79.16°E")
+    section_header("VIT Vellore, India", "12.97°N, 79.16°E, simulated 1 MW plant")
 
     if vit:
-        a = vit["rows"][0]
+        _, a_row, _ = _site_parts(vit)
         base = next((r for r in vit["rows"] if r["kind"] == "baseline"), None)
         v1, v2, v3, v4 = st.columns(4)
-        v1.metric("ATERNET nRMSE", f"{a['nrmse_pct']['mean']:.2f}%")
-        v2.metric("ATERNET Winkler", f"{a['winkler']['mean']:.4f}")
-        v3.metric("LightGBM nRMSE", f"{base['nrmse_pct']['mean']:.2f}%" if base else "n/a")
-        v4.metric("LightGBM Winkler", f"{base['winkler']['mean']:.4f}" if base else "n/a")
+        v1.metric("ATERNET typical error", f"{a_row['nrmse_pct']['mean']:.2f}%")
+        v2.metric("LightGBM typical error", f"{base['nrmse_pct']['mean']:.2f}%" if base else "n/a")
+        v3.metric("ATERNET range quality", f"{a_row['winkler']['mean']:.4f}", help="Lower is better.")
+        v4.metric("LightGBM range quality", f"{base['winkler']['mean']:.4f}" if base else "n/a", help="Lower is better.")
+        if base:
+            st.markdown(scoreboard_html(vit), unsafe_allow_html=True)
         cal_v = vit.get("calibration")
         if cal_v and cal_v.get("picp_daytime_before") is not None:
-            st.caption(f"Single seed. Daytime interval coverage {cal_v['picp_daytime_before']:.3f} raw → "
-                       f"{cal_v['picp_daytime_after']:.3f} after calibration (nominal 0.80): the intervals are "
-                       "still somewhat too narrow in daylight on this site.")
+            st.caption(f"Only one training run per model, so no firm win/loss is claimed. In daytime the forecast "
+                       f"range contained the simulated output {cal_v['picp_daytime_before'] * 100:.0f}% of the time "
+                       f"({cal_v['picp_daytime_after'] * 100:.0f}% after calibration; target 80%): the ranges are "
+                       "still somewhat too narrow here.")
     else:
-        st.info("No Vellore results found. Run the Vellore workspace commands in the README, then "
+        st.info("No Vellore results found. Follow the India demo steps in the README, then run "
                 "`python build_results_summary.py`.")
 
     pred_path = VIT_DIR / "outputs" / "predictions" / "test_predictions.npz"
@@ -826,31 +1015,31 @@ elif page == "India Demo (Simulated)":
         vp = load_vit_predictions()
         yv = vp["y_true"]
         day = np.where(yv.max(axis=1) > 0.1)[0]
-        section_header("Forecast viewer", "P10–P90 forecast range against the simulated plant output")
+        section_header("Pick a forecast", "Slide to choose a daytime case")
         options = day[::max(1, len(day) // 200)].tolist()
-        pick = st.select_slider("Test window", options=options, value=options[len(options) // 2])
-        steps = np.arange(1, yv.shape[1] + 1) * 0.5
+        pick = st.select_slider("Test case", options=options, value=options[len(options) // 2])
+        hours = np.arange(1, yv.shape[1] + 1) * 0.5
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=np.concatenate([steps, steps[::-1]]),
+        fig.add_trace(go.Scatter(x=np.concatenate([hours, hours[::-1]]),
                                  y=np.concatenate([vp["p90"][pick], vp["p10"][pick][::-1]]),
                                  fill="toself", fillcolor=COLORS["band"], line=dict(width=0),
-                                 name="P10–P90", hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=steps, y=vp["p50"][pick], name="ATERNET P50",
+                                 name="Likely range (80%)", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=hours, y=vp["p50"][pick], name="ATERNET best guess",
                                  line=dict(color=COLORS["p50"], width=2.5)))
-        fig.add_trace(go.Scatter(x=steps, y=yv[pick], name="Simulated plant output",
+        fig.add_trace(go.Scatter(x=hours, y=yv[pick], name="Simulated plant output",
                                  line=dict(color=COLORS["observed"], width=2, dash="dot")))
         if "baseline" in vp:
-            fig.add_trace(go.Scatter(x=steps, y=vp["baseline"][pick], name="Persistence",
+            fig.add_trace(go.Scatter(x=hours, y=vp["baseline"][pick], name="Naive guess (same as now)",
                                      line=dict(color=COLORS["muted"], width=1.5, dash="dash")))
         fig.update_layout(**PLOTLY_LAYOUT, height=380, xaxis_title="Hours ahead",
-                          yaxis_title="Output (fraction of 1 MWp)", yaxis_range=[-0.02, 1.02],
+                          yaxis_title="Output (fraction of 1 MW)", yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
         st.plotly_chart(fig, width="stretch")
 
-    plots = [("forecast_examples.png", "Forecast examples"),
-             ("reliability_diagram.png", "Reliability diagram"),
-             ("per_horizon_metrics.png", "Error by forecast horizon")]
+    plots = [("forecast_examples.png", "Example forecasts"),
+             ("reliability_diagram.png", "Does the range hold what it promises?"),
+             ("per_horizon_metrics.png", "Error by hours ahead")]
     shown = [(VIT_DIR / "outputs" / "plots" / f, cap) for f, cap in plots
              if (VIT_DIR / "outputs" / "plots" / f).exists()]
     if shown:
@@ -858,15 +1047,15 @@ elif page == "India Demo (Simulated)":
         for col, (path, cap) in zip(cols, shown):
             col.image(str(path), caption=cap + " (simulated site)", width="stretch")
 
-    with st.expander("How the simulation works"):
+    with st.expander("How is the plant output simulated?"):
         st.markdown(
-            "- **Simulated output:** P = peak × GHI/1000 × (1 − 0.004·(T_cell − 25)) × 0.88 "
-            "× soiling, clipped at peak/1.25, plus ~1% noise; T_cell = T_amb + 0.03125·GHI.\n"
-            "- **Why it is not circular:** the simulated output uses ERA5 *reanalysis* weather (what the weather "
-            "actually did); the model sees the *forecast* models (GFS, ICON, Météo-France, GEM). "
-            "The forecast-versus-actual error is real.\n"
-            "- **Limits:** no real measurements; one seed; accuracy numbers say how well the model learns this "
-            "simulator from forecasts.")
+            "- Output = plant size × sunshine strength, reduced when panels are hot, dusty, or the inverter is "
+            "at its limit, plus about 1% random noise.\n"
+            "- **Why this is not circular:** the simulated output uses what the weather *actually did* (a "
+            "reanalysis dataset), while the model only sees *weather forecasts* from four forecasting systems. "
+            "The difference between forecast and reality is real.\n"
+            "- **Limits:** no real measurements; one training run; the numbers tell you how well the model learns "
+            "this simulator from forecasts.")
 
 
 # ------------------------------------------------------------------ #
@@ -874,7 +1063,8 @@ elif page == "India Demo (Simulated)":
 # ------------------------------------------------------------------ #
 elif page == "Training":
     history = load_history()
-    section_header("Training history", f"{len(history)} epochs, early-stopped on validation pinball loss")
+    section_header("Training history", f"{len(history)} rounds of learning; training stopped automatically when it "
+                   "stopped improving on data it had not trained on.")
     epochs = [h["epoch"] for h in history]
 
     col1, col2 = st.columns(2)

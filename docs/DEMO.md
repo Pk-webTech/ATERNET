@@ -16,18 +16,18 @@ The Live Forecast page needs internet; skip it if the network is unreliable.
 
 ## Suggested order (about 10 minutes)
 
-1. **Dashboard** – one trained model on the Yorkshire test split: nRMSE 3.69 %, R² 0.963.
-   Point out *PICP (daytime, calibrated)* versus *PICP (all points)*: night points are
-   trivially covered, so daytime coverage is the honest figure.
-2. **Results & Evidence** (the key page) – multi-seed means ± std against LightGBM,
-   PatchTST and LSTM. Switch between **Yorkshire** and **South West England**.
-   Read the *Verdict* column out loud; it is computed from the data.
-3. **Uncertainty** – the interval widens when the model is less sure; per-regime
-   daytime coverage before and after calibration.
-4. **Guarantee Demo** – move the σ slider: quantiles never cross, width grows with σ,
-   routing softens (structural properties, checked by tests).
-5. **India Demo (Simulated)** – a red banner says the plant output is simulated. Show
-   the forecast viewer. Say plainly it is a demonstration for the VIT Vellore location.
+The left menu uses plain names. Every page starts with a blue box saying what it shows, and the
+"What do these words mean?" box defines every term in simple language.
+
+1. **Overview** – five headline numbers with hover help ("Typical error", "Follows reality",
+   "Range hit-rate (day)", ...). Scroll to *How does ATERNET compare with other models?*: a
+   colour-coded scoreboard (green = ATERNET better, yellow = about the same, red = worse).
+2. **Is ATERNET better?** (the key page) – pick a region (Yorkshire / South West England). Read the
+   *short answer* box, then the scoreboard and the two charts. Open *Show the detailed numbers* only if asked.
+   Scroll down for *Does the forecast range hold what it promises?* and *Which parts of ATERNET actually help?*
+3. **How sure is the model?** – when the model is less sure, it draws a wider range.
+4. **Built-in safety checks** – move the slider; three checks hold on a real forecast.
+5. **India demo (simulated)** – a red banner says the plant output is simulated. Use the slider to browse forecasts.
 
 ## What you can claim
 
