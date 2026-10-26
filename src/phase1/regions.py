@@ -21,6 +21,11 @@ class Region:
     region_id: int
     name: str
     points: Tuple[Tuple[float, float], ...]   # (lat, lon)
+    # True for sites with no measured PV feed: generation is then SIMULATED
+    # from reanalysis weather (src/phase1/simulated_pv.py) and every output
+    # derived from it must be reported as simulated.
+    simulated: bool = False
+    capacity_kw: float = 0.0                  # only used when simulated
 
     @property
     def latitude(self) -> float:
@@ -47,6 +52,11 @@ REGIONS = {
     21: Region(21, "WPD South Wales", ((51.6, -3.4), (51.7, -4.6), (51.8, -3.0))),
     22: Region(22, "WPD South West", ((50.7, -3.5), (50.4, -4.6), (51.2, -2.6))),
     23: Region(23, "NPG Yorkshire", ((53.8, -1.55), (53.4, -1.45), (53.75, -0.4))),
+    # Not a PV_Live region: demonstration site at VIT Vellore (India) with
+    # SIMULATED generation. 1 MWp is an illustrative plant size.
+    900: Region(900, "VIT Vellore (SIMULATED PV)",
+                ((12.9692, 79.1559), (12.9200, 79.1300), (13.0200, 79.2000)),
+                simulated=True, capacity_kw=1000.0),
 }
 
 

@@ -152,6 +152,31 @@ will have larger relative errors. (3) The intervals are slightly too narrow
 in clear_peak/volatile conditions and in the October backtest (0.75–0.76 vs
 0.80 nominal).
 
+## India demonstration (SIMULATED PV, not measured data)
+
+No open measured PV record exists for the VIT Vellore area, so
+`src/phase1/simulated_pv.py` generates one: a documented physical PV model
+(temperature derating, soiling, inverter clipping, noise) driven by ERA5
+**reanalysis** weather at Vellore for an illustrative 1 MWp plant. The model
+inputs are the usual Open-Meteo **forecast** models, a different source, so the
+forecast-vs-actual weather error is real. Even so, results on this site measure
+how well ATERNET learns the simulator from forecast weather, **not** real-world
+accuracy, and must be reported as simulated.
+
+```powershell
+$env:ATERNET_WORKSPACE = "workspaces/vit"       # isolated data/checkpoints/outputs
+$env:ATERNET_REGION_ID = "900"                  # VIT Vellore (SIMULATED PV)
+$env:ATERNET_START_DATE = "2024-01-01"          # all chosen models cover Vellore from here
+$env:ATERNET_WEATHER_MODELS = "gfs_seamless,icon_seamless,meteofrance_seamless,gem_seamless"
+python run_pipeline.py
+python -m src.training.train --residual-gate --last-step-skip --ema-decay 0.999 --epochs 50
+python -m src.evaluation.evaluate
+```
+
+UKMO's archive only starts around mid-January 2025 at Vellore, so it is left
+out to keep the ensemble membership constant over the training period.
+`predict.py live` is not available for this site (there is no live PV feed).
+
 ## Quickstart
 
 ```bash

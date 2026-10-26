@@ -226,11 +226,16 @@ def build_pvlive_series() -> pd.DataFrame:
 
     region = get_region(PVLIVE_REGION_ID)
     end = pd.Timestamp(SOURCE_END) + pd.Timedelta(days=1)  # include the whole last day
-    df = fetch_pvlive(region, SOURCE_START, end)
+    if region.simulated:
+        from src.phase1.simulated_pv import simulate_pv
+        df = simulate_pv(region, SOURCE_START, end)
+    else:
+        df = fetch_pvlive(region, SOURCE_START, end)
     df = df[df["timestamp"] <= pd.Timestamp(end, tz="UTC")].reset_index(drop=True)
 
     resolved = {
-        "source": "pvlive_openmeteo",
+        "source": "simulated_era5" if region.simulated else "pvlive_openmeteo",
+        "simulated": bool(region.simulated),
         "region_id": region.region_id,
         "region_name": region.name,
         "latitude": region.latitude,

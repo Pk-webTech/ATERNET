@@ -36,8 +36,8 @@ PVLIVE_REGION_ID = int(os.environ.get("ATERNET_REGION_ID", 23))  # env override 
 # Training period. The Open-Meteo historical-forecast archive has full
 # multi-model coverage from 2023 onward. END_DATE leaves the most recent
 # weeks unseen so `predict.py backtest` can run on genuinely new data.
-START_DATE = "2023-01-01"
-END_DATE = "2026-09-30"
+START_DATE = os.environ.get("ATERNET_START_DATE", "2023-01-01")
+END_DATE = os.environ.get("ATERNET_END_DATE", "2026-09-30")
 
 # Open-Meteo model ids used as ensemble members. All five have complete
 # GB coverage in the historical-forecast archive from 2023 and are also
@@ -50,3 +50,6 @@ WEATHER_MODELS = [
     "meteofrance_seamless",
     "gem_seamless",
 ]
+# Comma-separated override, e.g. for sites where a model's archive starts late.
+if os.environ.get("ATERNET_WEATHER_MODELS"):
+    WEATHER_MODELS = [m.strip() for m in os.environ["ATERNET_WEATHER_MODELS"].split(",") if m.strip()]
