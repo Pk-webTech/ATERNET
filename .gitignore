@@ -47,3 +47,9 @@ archive/
 
 # Second-site / alternative workspaces
 workspaces/
+
+# Generated report assets (rebuild with docs/report/*.py)
+docs/report/figures/
+docs/report/__pycache__/
+ATERNET_Project_Report_BCSE497J.docx
+ATERNET_Project_Report_BCSE497J.pdf

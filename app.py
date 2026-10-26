@@ -76,6 +76,11 @@ st.markdown("""
     section[data-testid="stSidebar"] .stMarkdown h2,
     section[data-testid="stSidebar"] .stMarkdown h3 { color: #ECEFF4 !important; }
     section[data-testid="stSidebar"] hr { border-color: #434C5E; }
+    section[data-testid="stSidebar"] .stRadio label p,
+    section[data-testid="stSidebar"] .stRadio label div,
+    section[data-testid="stSidebar"] .stRadio label span,
+    section[data-testid="stSidebar"] .stCaption, section[data-testid="stSidebar"] .stCaption p
+    { color: #ECEFF4 !important; }
     div[data-testid="stMetric"] {
         background: white; border: 1px solid #E5E5E5;
         border-radius: 8px; padding: 14px 16px;
@@ -225,8 +230,8 @@ PAGE_INTRO = {
                      "forecasts scored against what really happened.",
     "Forecast Explorer": "Look at individual forecasts one by one and compare them with what actually happened.",
     "Routing & Experts": "ATERNET contains four small 'expert' models, each meant for a type of weather. "
-                         "This page shows how much the model trusts each one. In our tests they share the work "
-                         "fairly evenly.",
+                         "This page shows how much the model trusts each one. In our tests the trust does not follow "
+                         "the weather type cleanly, and switching the gate off did not change accuracy.",
     "Uncertainty": "A good forecast also says how sure it is. Here we check that the model's 'unsureness' really "
                    "goes up when its errors are bigger, and that its forecast ranges contain the real value "
                    "about as often as promised.",
@@ -327,6 +332,7 @@ def scoreboard_html(site):
                      "comparison is not possible. ATERNET's result barely changes between runs.")
         else:
             words = _words(sa, pa, "Typical error") + "; " + _words(sr, pr, "range quality score")
+        words = words.rstrip(".")
         out.append(f"<tr><td><b>{b['model']}</b></td><td>{pill(sa)}</td><td>{pill(sr)}</td><td>{words}.</td></tr>")
     out.append("</table>")
     return "".join(out)
@@ -669,7 +675,8 @@ elif page == "Forecast Explorer":
 # ROUTING & EXPERTS
 # ------------------------------------------------------------------ #
 elif page == "Routing & Experts":
-    section_header("How the experts work", "ATERNET has four small expert models, one for each type of weather. A gate decides how much to trust each one. In our tests the trust is shared fairly evenly.")
+    section_header("How the experts work", "ATERNET has four small expert models, one for each type of weather. A gate decides how much to trust each one. In our tests the trust does not match the weather type cleanly, "
+                   "and removing the gate did not change accuracy.")
     preds = load_predictions()
     gate = preds["gate_weights"]
     regime_ids = preds["regime_id"]
