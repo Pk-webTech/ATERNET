@@ -28,8 +28,7 @@ import numpy as np
 import pandas as pd
 
 from src.phase1.pvlive_openmeteo import (
-    _http_get_json, _payload_to_long, _date_chunks, _utc, half_hour_grid,
-    weather_to_pv_grid,
+    fetch_range_adaptive, _payload_to_long, _utc, half_hour_grid, weather_to_pv_grid,
 )
 from src.phase1.regions import Region
 from src.utils.logger import get_logger
@@ -80,11 +79,7 @@ def fetch_reanalysis(region: Region, start, end, cache: bool = True) -> pd.DataF
         "hourly": _ERA5_VARS, "wind_speed_unit": "ms", "timezone": "GMT",
     }
     frames = []
-    for c_start, c_end in _date_chunks(start.normalize(), end.normalize(), days=183):
-        payload = _http_get_json(
-            OPENMETEO_ERA5_URL,
-            dict(base, start_date=c_start.strftime("%Y-%m-%d"), end_date=c_end.strftime("%Y-%m-%d")),
-            cache=cache)
+    for payload in fetch_range_adaptive(OPENMETEO_ERA5_URL, base, start, end, cache):
         payloads = payload if isinstance(payload, list) else [payload]
         frames.append(_payload_to_long(payloads, ["era5"]))
     df = pd.concat(frames, ignore_index=True).drop_duplicates(["timestamp", "ensemble_member"])

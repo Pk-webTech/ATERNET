@@ -168,6 +168,36 @@ def fetch_pvlive(region: Region, start, end, cache: bool = True) -> pd.DataFrame
 # Open-Meteo
 # ---------------------------------------------------------------------
 
+def fetch_range_adaptive(url: str, base_params: dict, start: pd.Timestamp, end: pd.Timestamp,
+                         cache: bool, chunk_days: int = 183) -> list:
+    """
+    Download [start, end] in `chunk_days` pieces. If a piece keeps failing
+    (e.g. a network path that cuts large responses short), it is halved and
+    retried, down to ~a week. Returns the list of payloads (order not
+    significant; callers de-duplicate by timestamp).
+    """
+    payloads = []
+
+    def go(a: pd.Timestamp, b: pd.Timestamp, retries: int):
+        if (b - a).days <= 6:
+            retries = max(retries, 4)  # smallest piece: be patient before giving up
+        params = dict(base_params, start_date=a.strftime("%Y-%m-%d"), end_date=b.strftime("%Y-%m-%d"))
+        try:
+            payloads.append(_http_get_json(url, params, cache=cache, retries=retries))
+        except RuntimeError as e:
+            span = (b - a).days
+            if not str(e).startswith("Request to") or span <= 6:
+                raise  # 4xx request bug, or already as small as it gets
+            mid = a + pd.Timedelta(days=span // 2)
+            logger.warning(f"{a.date()}..{b.date()} failed; splitting into two requests.")
+            go(a, mid, 2)
+            go(mid + pd.Timedelta(days=1), b, 2)
+
+    for c_start, c_end in _date_chunks(start.normalize(), end.normalize(), days=chunk_days):
+        go(c_start, c_end, 2)
+    return payloads
+
+
 def _payload_to_long(payloads: list, models: List[str]) -> pd.DataFrame:
     """
     One payload per sample point -> hourly long frame averaged over points:
@@ -217,10 +247,8 @@ def fetch_weather(region: Region, start=None, end=None, live: bool = False,
         payload_batches.append(_http_get_json(OPENMETEO_LIVE_URL, params, cache=False))
     else:
         start, end = _utc(start), _utc(end)
-        for c_start, c_end in _date_chunks(start.normalize(), end.normalize(), days=183):
-            params = dict(base, start_date=c_start.strftime("%Y-%m-%d"),
-                          end_date=c_end.strftime("%Y-%m-%d"))
-            payload_batches.append(_http_get_json(OPENMETEO_HISTORICAL_URL, params, cache=cache))
+        payload_batches.extend(
+            fetch_range_adaptive(OPENMETEO_HISTORICAL_URL, base, start, end, cache))
 
     frames = []
     for payload in payload_batches:
