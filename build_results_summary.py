@@ -111,7 +111,15 @@ def main():
         sites["south_west"] = sw
 
     vit_m = ROOT / "workspaces/vit/outputs/metrics"
-    if (vit_m / "test_metrics.json").exists():
+    vit_seeds = glob.glob(str(vit_m / "multiseed_final/seed*/ablation_tune_ema.json"))
+    if len(vit_seeds) >= 2:
+        v = _site(ROOT / "workspaces/vit/outputs", "VIT Vellore, India (SIMULATED PV)", True,
+                  ("Generation is SIMULATED from ERA5 reanalysis with a physical PV model "
+                   "(1 MWp illustrative plant); inputs are real multi-model weather forecasts. "
+                   f"{len(vit_seeds)} seeds. Not a real-world accuracy result."), False)
+        if v:
+            sites["vellore"] = v
+    elif (vit_m / "test_metrics.json").exists():
         t = _load(vit_m / "test_metrics.json")["headline"]
         rows = [{"model": "ATERNET (final configuration)", "kind": "aternet", "n_seeds": 1,
                  "per_seed_nrmse": [round(t["nrmse_pct"], 3)],

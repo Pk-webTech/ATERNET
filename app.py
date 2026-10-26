@@ -248,8 +248,9 @@ GLOSSARY_MD = """
   Lower is better. It stops a model from cheating by drawing very wide ranges.
 - **Runs / seeds** – each model is trained several times from different random starts. If results barely change
   between runs, the model is reliable.
-- **Better / about the same / worse** – we only say "better" or "worse" when the gap is bigger than the
-  normal run-to-run variation (about 2 standard deviations). Otherwise it is "about the same".
+- **Better / about the same / worse** – on the real regions we only say "better" or "worse" when the gap is
+  bigger than the normal run-to-run variation (about 2 standard deviations); otherwise it is "about the same".
+  On the simulated India demo each model was trained once, so "scored better" there is simply how that run came out.
 - **Persistence** – the naive forecast "the next hours will look like right now". Beating it is the minimum bar.
 """
 
@@ -257,8 +258,8 @@ PILLS = {
     "better":   ("ATERNET is better", "#1B7F4B"),
     "same":     ("About the same", "#9A6B00"),
     "worse":    ("ATERNET is worse", "#B83232"),
-    "lead1":    ("Looks better (only 1 test run)", "#3C7A9A"),
-    "trail1":   ("Looks worse (only 1 test run)", "#9A5A3C"),
+    "lead1":    ("ATERNET scored better", "#1B7F4B"),
+    "trail1":   ("ATERNET scored worse", "#B83232"),
     "unstable": ("Other model unreliable", "#6B7280"),
 }
 
@@ -298,9 +299,9 @@ def _words(status, pct, what):
     if status == "worse":
         return f"{what} is {abs(pct):.0f}% higher (worse)"
     if status == "lead1":
-        return f"{what} was {abs(pct):.0f}% lower, but from one test run only"
+        return f"{what} is {abs(pct):.0f}% lower (better)"
     if status == "trail1":
-        return f"{what} was {abs(pct):.0f}% higher, but from one test run only"
+        return f"{what} is {abs(pct):.0f}% higher (worse)"
     return f"{what} is about the same"
 
 
@@ -492,7 +493,7 @@ if page == "Dashboard":
                           yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
         section_header("By weather situation")
@@ -569,7 +570,7 @@ elif page == "Live Forecast":
                           yaxis_title="PV generation (MW)",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
         st.dataframe(fc[["target_time", "p10_mw", "p50_mw", "p90_mw"]].round(1),
                      width="stretch", hide_index=True)
 
@@ -605,7 +606,7 @@ elif page == "Live Forecast":
                           yaxis_title="PV generation (MW)",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ------------------------------------------------------------------ #
@@ -654,7 +655,7 @@ elif page == "Forecast Explorer":
                           yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
         mae_val = float(np.mean(np.abs(y[wi] - preds["p50"][wi])))
         covered = float(np.mean((y[wi] >= preds["p10"][wi]) & (y[wi] <= preds["p90"][wi])))
         mc1, mc2, mc3, mc4 = st.columns(4)
@@ -687,7 +688,7 @@ elif page == "Routing & Experts":
             text=np.round(mat, 3).astype(str), texttemplate="%{text}",
             colorscale=[[0, "#F7F5F2"], [1, "#2E5A88"]], zmin=0, zmax=0.5, showscale=False))
         fig.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Expert", yaxis_title="Regime")
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.markdown("**Which expert is trusted most, and how often**")
@@ -700,7 +701,7 @@ elif page == "Routing & Experts":
         fig2.update_layout(**PLOTLY_LAYOUT, height=300, yaxis_title="Fraction",
                            yaxis_range=[0, max(shares.values()) * 1.3])
         styled_axes(fig2)
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
     section_header("Trust in each expert for one case")
@@ -718,7 +719,7 @@ elif page == "Routing & Experts":
             text=[f"{v:.3f}" for v in gate[wi2]], textposition="outside"))
         fig3.update_layout(**PLOTLY_LAYOUT, height=260, yaxis_range=[0, 1], yaxis_title="Gate weight")
         styled_axes(fig3)
-        st.plotly_chart(fig3, width="stretch")
+        st.plotly_chart(fig3, use_container_width=True)
 
 
 # ------------------------------------------------------------------ #
@@ -753,7 +754,7 @@ elif page == "Uncertainty":
             fig.update_layout(**PLOTLY_LAYOUT, height=380,
                               xaxis_title=xlabel, yaxis_title="Average error of that forecast")
             styled_axes(fig)
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
     legend_html = " ".join(
         f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
@@ -827,7 +828,7 @@ elif page == "Guarantee Demo":
         fig.update_layout(**PLOTLY_LAYOUT, height=280, showlegend=False,
                           yaxis_range=[-0.02, 1.02], xaxis_title="Step")
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with g2:
         st.markdown("**Check 2: the range widens when the model is less sure**")
@@ -846,7 +847,7 @@ elif page == "Guarantee Demo":
                        annotation_text=f"\u03c3={sigma_override:.2f}")
         fig2.update_layout(**PLOTLY_LAYOUT, height=280, xaxis_title="\u03c3_total", yaxis_title="Mean width")
         styled_axes(fig2)
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, use_container_width=True)
 
     with g3:
         st.markdown("**Check 3: the experts' votes even out when unsure**")
@@ -864,7 +865,7 @@ elif page == "Guarantee Demo":
                               marker_color=colors_bar, showlegend=False), row=2, col=1)
         fig3.update_layout(**PLOTLY_LAYOUT, height=280)
         fig3.update_yaxes(range=[0, 1])
-        st.plotly_chart(fig3, width="stretch")
+        st.plotly_chart(fig3, use_container_width=True)
 
 
 # ------------------------------------------------------------------ #
@@ -893,8 +894,8 @@ elif page == "Results & Evidence":
     section_header("The same comparison as charts", "Whiskers show how much each model's result changes between "
                                                    "training runs. Shorter bar = better.")
     c_left, c_right = st.columns(2)
-    c_left.plotly_chart(bar_chart(main_rows, "nrmse_pct", "Typical error (%)", 2), width="stretch")
-    c_right.plotly_chart(bar_chart(main_rows, "winkler", "Range quality score", 4), width="stretch")
+    c_left.plotly_chart(bar_chart(main_rows, "nrmse_pct", "Typical error (%)", 2), use_container_width=True)
+    c_right.plotly_chart(bar_chart(main_rows, "winkler", "Range quality score", 4), use_container_width=True)
 
     with st.expander("Show the detailed numbers"):
         st.dataframe([{
@@ -999,8 +1000,8 @@ elif page == "India Demo (Simulated)":
             st.markdown(scoreboard_html(vit), unsafe_allow_html=True)
         cal_v = vit.get("calibration")
         if cal_v and cal_v.get("picp_daytime_before") is not None:
-            st.caption(f"Only one training run per model, so no firm win/loss is claimed. In daytime the forecast "
-                       f"range contained the simulated output {cal_v['picp_daytime_before'] * 100:.0f}% of the time "
+            st.caption(f"In daytime the forecast range contained the simulated output "
+                       f"{cal_v['picp_daytime_before'] * 100:.0f}% of the time "
                        f"({cal_v['picp_daytime_after'] * 100:.0f}% after calibration; target 80%): the ranges are "
                        "still somewhat too narrow here.")
     else:
@@ -1035,7 +1036,7 @@ elif page == "India Demo (Simulated)":
                           yaxis_title="Output (fraction of 1 MW)", yaxis_range=[-0.02, 1.02],
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     plots = [("forecast_examples.png", "Example forecasts"),
              ("reliability_diagram.png", "Does the range hold what it promises?"),
@@ -1080,7 +1081,7 @@ elif page == "Training":
         fig.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Epoch", yaxis_title="Loss",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.markdown("**Expert gate share**")
@@ -1094,7 +1095,7 @@ elif page == "Training":
         fig2.update_layout(**PLOTLY_LAYOUT, height=340, xaxis_title="Epoch", yaxis_title="Gate weight",
                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig2)
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, use_container_width=True)
 
     col3, col4 = st.columns(2)
     with col3:
@@ -1107,7 +1108,7 @@ elif page == "Training":
         fig3.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Epoch",
                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
         styled_axes(fig3)
-        st.plotly_chart(fig3, width="stretch")
+        st.plotly_chart(fig3, use_container_width=True)
 
     with col4:
         st.markdown("**Learning rate**")
@@ -1115,4 +1116,4 @@ elif page == "Training":
                                           line=dict(color=COLORS["slate"])))
         fig4.update_layout(**PLOTLY_LAYOUT, height=300, xaxis_title="Epoch", yaxis_title="LR")
         styled_axes(fig4)
-        st.plotly_chart(fig4, width="stretch")
+        st.plotly_chart(fig4, use_container_width=True)
