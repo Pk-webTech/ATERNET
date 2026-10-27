@@ -510,7 +510,15 @@ def build(pages):
     break_p = marks[1]          # ends the roman-numbered front matter
     main_matter(doc, R, break_p)
     front_matter(doc, R)
-    doc.save(str(OUT))
+    global OUT, PDF
+    try:
+        doc.save(str(OUT))
+    except PermissionError:
+        # The report is open in Word: keep the open file untouched and write a copy next to it.
+        OUT = OUT.with_name(OUT.stem.replace("_updated", "") + "_updated.docx")
+        PDF = OUT.with_suffix(".pdf")
+        doc.save(str(OUT))
+        print(f"NOTE: the original is open in Word, so the new version was saved as {OUT.name}")
     return R
 
 
@@ -532,7 +540,12 @@ def paginate(R, export_pdf=False):
             pages[bm] = roman(n) if sec == 2 else str(n)
         total = int(doc.ComputeStatistics(2))
         if export_pdf:
-            doc.ExportAsFixedFormat(str(PDF), 17)
+            try:
+                doc.ExportAsFixedFormat(str(PDF), 17)
+            except Exception:
+                alt = PDF.with_name(PDF.stem + "_new.pdf")
+                doc.ExportAsFixedFormat(str(alt), 17)
+                print(f"NOTE: {PDF.name} is in use; PDF saved as {alt.name}")
         doc.Close(False)
     finally:
         w.Quit()

@@ -55,17 +55,17 @@ def chapter1(R):
            "cut sharply by clouds. When the share of solar power in a grid is small this variability is absorbed "
            "without difficulty, but as the share grows, system operators must anticipate how much solar energy will be "
            "available in the next minutes, hours and days in order to schedule other generation, keep reserves ready, "
-           "trade energy and maintain the balance between supply and demand [@antonanzas2016,wan2015].")
+           "trade energy and maintain the balance between supply and demand [@lo2025,zhao2026twostage].")
     R.body("Forecasts of PV power are produced from three kinds of information: recent measurements of the plant's "
            "own output, satellite and sky observations, and numerical weather prediction (NWP), in which "
            "physics-based atmospheric models are run on supercomputers to predict irradiance, cloud cover and "
-           "temperature [@bauer2015]. For horizons of a few hours, the most useful forecasts combine the latest "
+           "temperature [@zhao2026twostage]. For horizons of a few hours, the most useful forecasts combine the latest "
            "measurements with NWP output, because the measurements describe what is happening now while the NWP "
            "describes what the atmosphere is about to do.")
     R.body("A single number is not enough for decisions. If a forecast says 300 MW but the true value could easily lie "
            "anywhere between 150 MW and 450 MW, an operator will plan very differently than if the plausible range is "
            "280 to 320 MW. For this reason the research community has moved from point forecasts to probabilistic "
-           "forecasts, which describe the whole distribution of possible outcomes [@gneiting2014,meer2018]. A common "
+           "forecasts, which describe the whole distribution of possible outcomes [@lo2025,lyu2024]. A common "
            "and practical form is a prediction interval, for example the range between the 10th and 90th percentiles "
            "(P10 and P90) together with a median (P50). Such an interval is useful only if it is reliable (the real "
            "value falls inside it about as often as promised) and sharp (it is no wider than necessary).")
@@ -107,67 +107,126 @@ def chapter1(R):
 def chapter2(R):
     R.chapter_heading(2, "Project Description and Goals")
     R.h2("2.1", "Literature Review")
-    R.body("**PV forecasting.** Reviews of PV forecasting [@antonanzas2016,wan2015,sweeney2020] distinguish physical "
-           "models (which convert forecast irradiance and temperature to power through a model of the plant), "
-           "statistical and machine-learning models trained on historical data, and hybrids of the two. For horizons "
-           "of one to a few hours the best results come from learning models that use both recent measurements and "
-           "NWP forecasts, which is the setting of this project.")
-    R.body("**Sequence models.** Recurrent networks, in particular the long short-term memory network (LSTM) "
-           "[@hochreiter1997], were for years the standard deep model for time series. The Transformer "
+    R.body("We studied twenty recent papers on probabilistic forecasting of solar power and of other energy series "
+           "(Table 2.1). They are grouped below by the idea they contribute, and each group is related to the design "
+           "of ATERNET. Some of the papers concern other energy series (wind, load, curtailment, thermal energy); "
+           "this is stated where it matters, because their methods can transfer but their results do not.")
+    R.body("**Quantile-based probabilistic forecasting of PV.** Most probabilistic PV models output quantiles trained "
+           "with the pinball loss [@koenker1978,gneiting2007]. Lo et al. [@lo2025] propose a quantile-regression "
+           "procedure that skips training the separate upper- and lower-bound models when a site's output is stable. "
+           "He et al. [@he2026mrdl] decompose the power series with adaptive variational mode decomposition, predict "
+           "with a bidirectional LSTM with feature attention, and add an asymmetric monotonicity penalty so that "
+           "quantiles do not cross; Huang et al. [@huang2026] likewise use a non-crossing joint quantile loss for a "
+           "distributed PV cluster. Zhao et al. [@zhao2026twostage] feed multi-source NWP forecasts to a two-stage "
+           "ensemble in which diverse base learners produce quantiles and an attention-based meta-learner combines them "
+           "under a non-crossing quantile generation strategy. Phan et al. [@phan2024] combine a Transformer with "
+           "lower-upper-bound estimation, XGBoost-based imputation of missing data and a GRU that corrects residual "
+           "bias, and He et al. [@he2026gan] use a generative adversarial network to learn the joint distribution of "
+           "measurements and NWP, with a multi-branch CNN-LSTM and quantile regression with kernel density estimation. "
+           "In ATERNET the quantiles cannot cross by construction, because the interval is built from positive "
+           "half-widths around the median, so no penalty term is needed.")
+    R.body("**Dependence on the weather situation.** Forecast difficulty depends on the weather. Lyu and "
+           "Eftekharnejad [@lyu2024] combine copula theory with an XGBoost classifier so that the dependence between "
+           "meteorological variables changes with the weather type, and report gains of up to 60% under non-sunny "
+           "conditions. Wang et al. [@wang2026joint] use a Transformer point forecast, an autoencoder that recognises "
+           "fluctuation patterns and a Clayton copula for the joint distribution of forecast values and errors. Related "
+           "ideas appear in other energy domains: TADNet [@ye2024] treats a series as a regular component plus a "
+           "residual whose fluctuation interval is quantified, and Zhao et al. [@zhao2024] add Gaussian-process "
+           "residual learning to a Transformer for multi-energy load forecasting. These works support treating "
+           "different situations differently, which ATERNET does with its regime experts.")
+    R.body("**Mixtures of experts and gating.** A mixture of experts splits a task between specialised sub-models and "
+           "a gating network that combines them [@jacobs1991,shazeer2017]. Wang et al. [@wang2025cg] use a "
+           "context-gated mixture of experts to weight LSTM, GRU, Transformer and tree-based learners for PV "
+           "forecasting, with a gate driven by input features, local prediction variance and historical residuals, "
+           "followed by a residual corrector and a conformal interval. Heidrich et al. [@heidrich2026] place a mixture "
+           "of experts with SwiGLU feed-forward experts and an auxiliary load-balancing loss inside a patch-based "
+           "Transformer for curtailment forecasting, and Seman et al. [@seman2026] use sparse expert Transformers "
+           "with measures against expert collapse for thermal energy forecasting. Load-balancing penalties are used "
+           "to keep all experts in use [@shazeer2017,heidrich2026]. These studies show that gating is attractive, "
+           "but they do not settle whether a learned gate beats a plain average of the experts for regional PV, "
+           "which the experiments in Chapter 7 test directly.")
+    R.body("**Calibrated intervals.** Conformal prediction gives distribution-free intervals. Romano et al. "
+           "[@romano2019] conformalise quantile regression, and Jensen et al. [@jensen2024] extend this to time series "
+           "with a bootstrap ensemble of quantile regressors and asymmetric conformity scores, obtaining sharper "
+           "valid intervals. Conformal steps are also part of the PV and curtailment frameworks of [@wang2025cg] "
+           "and [@heidrich2026]. We use the quantile-regression conformity score of Romano et al. per weather "
+           "regime (Section 5.1.7).")
+    R.body("**Spatial and image-based methods.** Another group of recent papers uses spatial structure or "
+           "imagery. Graph networks model the dependence between PV sites: Wang et al. [@wang2026dgn] with a dynamic "
+           "graph and a loss that aligns both the shape and the amplitude of the forecast, Lin et al. [@lin2025] with a "
+           "convolutional graph network and parameter transfer on 127 plants, Huang et al. [@huang2026] with "
+           "spatial-temporal attention, and Song et al. [@song2025] with random coarse-graph attention that also "
+           "handles missing data across 1,649 sites. Image-based work predicts cloud motion: Rastgoo et al. "
+           "[@rastgoo2025] use a diffusion model on sky-image sequences with an evidence-lower-bound loss, and Wang "
+           "et al. [@wang2026clouddiff] a diffusion model on satellite images with a neural stochastic differential "
+           "equation, whose image ensembles are combined with PV history and NWP. These methods need plant-level "
+           "networks or image streams; ATERNET needs only the regional PV series and NWP forecasts. For wind power, "
+           "Abedinia et al. [@abedinia2024] estimate the parameters of a spline quantile function with a CNN-LSTM "
+           "trained with an adaptive weighted CRPS, an alternative to predicting fixed quantiles.")
+    R.body("**Sequence models and boosted trees.** Recurrent networks, in particular the long short-term memory network "
+           "(LSTM) [@hochreiter1997], were for years the standard deep model for time series. The Transformer "
            "[@vaswani2017] replaced recurrence by attention, and PatchTST [@nie2023] adapted it to forecasting by "
-           "splitting each series into short overlapping patches that are treated as tokens, which reduces cost and "
-           "improves long-range accuracy. We use a PatchTST-style encoder as the backbone of ATERNET and a vanilla "
-           "PatchTST predicting quantiles as one of our baselines.")
-    R.body("**Gradient-boosted trees.** LightGBM [@ke2017] is a fast gradient-boosting library that remains very "
-           "competitive on tabular data and is a frequent winner in forecasting competitions. It does not model "
-           "time explicitly, so features describing the recent past and the forecast weather must be supplied. "
-           "Because of its strength we treat it as the principal baseline, not as a weak comparison.")
-    R.body("**Probabilistic forecasting and scoring.** Quantile regression [@koenker1978] trains a model to output a "
-           "chosen quantile by minimising the pinball loss, a proper scoring rule [@gneiting2007]. A prediction "
-           "interval is assessed by its coverage (PICP), its width (PINAW) and by the Winkler score [@winkler1972], "
-           "which adds a penalty proportional to the amount by which the observation lies outside the interval, so "
-           "that a model cannot look good simply by drawing very wide intervals.")
-    R.body("**Mixtures of experts.** The mixture-of-experts idea [@jacobs1991] splits a task between several "
-           "specialised sub-models and a gating network that decides how to combine them; sparsely gated versions "
-           "[@shazeer2017] made it a standard way to scale neural networks. Gating networks are known to be "
-           "difficult to train, because experts that receive less weight receive less gradient and can fall "
-           "further behind. We encountered exactly this difficulty (Chapter 7).")
-    R.body("**Conformal calibration.** Conformalized quantile regression [@romano2019] uses a held-out calibration set "
-           "to adjust the lower and upper quantiles of any model so that the intervals reach their promised coverage "
-           "under mild assumptions. We apply it per weather regime.")
-    R.body("**Stabilising training.** ReZero [@bachlechner2021] multiplies each residual branch by a learnable scalar "
-           "initialised to zero so that a network starts as the identity and only departs from it when that helps. "
-           "Averaging the weights along the training trajectory [@polyak1992], today usually implemented as an "
-           "exponential moving average (EMA), is a cheap way to obtain a smoother and often more accurate model. Both "
-           "ideas proved decisive in our work (Section 7.4).")
-    tl = R.table(
-        ["Work / method", "Idea", "What it lacks for our problem"],
+           "splitting each series into short overlapping patches that are treated as tokens. We use a PatchTST-style "
+           "encoder as the backbone of ATERNET and a vanilla PatchTST predicting quantiles as a baseline. LightGBM "
+           "[@ke2017] is a fast gradient-boosting library that remains very competitive on tabular data; it does not "
+           "model time explicitly, so features describing the recent past and the forecast weather must be supplied. "
+           "Because of its strength we treat it as the principal baseline.")
+    R.body("**Scoring and training stability.** An interval is assessed by its coverage (PICP), its width (PINAW) "
+           "and by the Winkler score [@winkler1972], which adds a penalty proportional to the amount by which the "
+           "observation lies outside the interval, so that a model cannot look good simply by drawing very wide "
+           "intervals. ReZero [@bachlechner2021] multiplies each residual branch by a learnable scalar initialised to "
+           "zero so that a network starts as the identity and only departs from it when that helps. Averaging the "
+           "weights along the training trajectory [@polyak1992], today usually implemented as an exponential moving "
+           "average (EMA), is a cheap way to obtain a smoother and often more accurate model. Both ideas proved "
+           "decisive in our work (Section 7.4).")
+    R.table(
+        ["Work", "Approach (as stated in the paper)", "Relation to ATERNET"],
         [
-            ["PV forecasting reviews [@antonanzas2016,wan2015]", "Survey of physical, statistical and ML methods",
-             "No single probabilistic, regime-aware model"],
-            ["LSTM [@hochreiter1997]", "Recurrent sequence model", "Point or single-uncertainty output; unstable seeds in our tests"],
-            ["PatchTST [@nie2023]", "Patch-based Transformer forecaster", "No explicit weather-regime or NWP-uncertainty handling"],
-            ["LightGBM [@ke2017]", "Gradient-boosted trees, quantile objective", "One model per quantile and step; no temporal model"],
-            ["Mixture of experts [@jacobs1991,shazeer2017]", "Specialised sub-models plus a gate", "Gate can destabilise training"],
-            ["Conformalized quantile regression [@romano2019]", "Calibrates interval coverage", "Needs care with night-time zeros"],
-            ["ReZero, weight averaging [@bachlechner2021,polyak1992]", "Zero-initialised residuals; averaged weights", "General techniques, not tied to PV"],
+            ["Wang et al. 2026 [@wang2026dgn]", "Dynamic graph network over distributed PV sites; shape-amplitude loss (dynamic time warping + MSE); quantile regression", "Needs several sites; ATERNET models one regional series"],
+            ["Lo et al. 2025 [@lo2025]", "Quantile regression that skips training upper and lower bounds when output is stable; missing-data imputation", "ATERNET always outputs three quantiles"],
+            ["He et al. 2026 [@he2026mrdl]", "Adaptive VMD, BiLSTM with feature attention, asymmetric monotonicity penalty against quantile crossing", "ATERNET prevents crossing by construction"],
+            ["Wang et al. 2025 [@wang2025cg]", "Context-gated mixture of experts over LSTM, GRU, Transformer and tree learners; residual corrector; conformal interval; no NWP", "Closest gating idea; ATERNET gates on NWP spread and expert disagreement"],
+            ["Zhao et al. 2026 [@zhao2026twostage]", "Two-stage ensemble with meta-learner on multi-source NWP; skip connections; non-crossing quantile generation", "Closest NWP use; ATERNET uses the spread between NWP models as uncertainty"],
+            ["He et al. 2026 [@he2026gan]", "Similar-moment selection; GAN on measurements + NWP; multi-branch CNN-LSTM; quantile regression with KDE", "Data augmentation; ATERNET uses no generative model"],
+            ["Heidrich et al. 2026 [@heidrich2026]", "Patch-based Transformer with SwiGLU mixture of experts, load-balancing loss and conformal inference (curtailment)", "Same building blocks, different series"],
+            ["Lyu and Eftekharnejad 2024 [@lyu2024]", "Copula theory with an XGBoost weather classifier for changing dependencies", "Weather-dependent modelling, like our regimes"],
+            ["Lin et al. 2025 [@lin2025]", "Dynamic convolutional graph network; parameter transfer; regional PV from 127 plants", "Needs plant-level data"],
+            ["Huang et al. 2026 [@huang2026]", "Spatial-temporal attention and graph convolution; non-crossing joint quantile loss", "Cluster graph; ATERNET uses no graph"],
+            ["Rastgoo et al. 2025 [@rastgoo2025]", "Diffusion model on sky-image sequences; ELBO loss; ultra-short term", "Needs sky images"],
+            ["Seman et al. 2026 [@seman2026]", "Hierarchical VMD, architecture search, sparse expert Transformers (thermal energy)", "Different series; shares expert idea"],
+            ["Phan et al. 2024 [@phan2024]", "Transformer-LUBE; XGBoost imputation; GRU residual correction; day-ahead PV with NWP", "Point-and-bounds design; ATERNET is quantile-based"],
+            ["Jensen et al. 2024 [@jensen2024]", "Ensemble conformalized quantile regression with asymmetric conformity scores", "Related calibration; we use the CQR score per regime"],
+            ["Song et al. 2025 [@song2025]", "Random coarse-graph attention and imputation across 1,649 PV sites", "Large-scale graph; ATERNET is single-region"],
+            ["Wang et al. 2026 [@wang2026clouddiff]", "Diffusion-based satellite image prediction; neural SDE; multimodal ensemble with PV and NWP", "Needs satellite images"],
+            ["Zhao et al. 2024 [@zhao2024]", "Hybrid-attention Transformer with Gaussian-process residual learning (multi-energy load)", "Residual modelling idea; different series"],
+            ["Ye et al. 2024 [@ye2024]", "Regular component plus residual fluctuation interval; convolution with attention and gating", "Decomposition of the series; different series"],
+            ["Wang et al. 2026 [@wang2026joint]", "Transformer, autoencoder fluctuation patterns and Clayton copula for forecast intervals", "Pattern-dependent intervals; copula-based"],
+            ["Abedinia et al. 2024 [@abedinia2024]", "CNN-LSTM estimating a spline quantile function; adaptive weighted CRPS (wind power)", "Alternative to fixed quantiles; wind"],
         ],
-        "Summary of related work and what each leaves open for this project.",
-        widths=[4.8, 5.0, 5.8], size=9.5, align=[L_, L_, L_])
+        "The twenty papers studied and how each relates to ATERNET.",
+        widths=[3.9, 7.2, 4.5], size=8.5, align=[L_, L_, L_])
     R.h2("2.2", "Research Gap")
-    R.body("From the literature and our preliminary experiments we identified the following gaps, which define the "
+    R.body("From these papers and from our preliminary experiments we identified the following gaps, which define the "
            "contribution of this project:")
     R.bullets([
-        "Most PV forecasting studies give a single uncertainty value or none, and few use the **two sources of "
-        "uncertainty** (disagreement between NWP models and disagreement between experts) together.",
-        "Mixture-of-experts gating is usually introduced without checking whether it **actually beats a plain "
-        "average** of the experts or whether it makes training unstable.",
-        "Reported **interval coverage** often counts night-time hours, where the true value and the interval are both "
-        "zero and therefore trivially agree, which hides under-coverage during the hours that matter.",
-        "Comparisons are frequently based on **one training run**, so differences of a few percent cannot be "
-        "distinguished from luck.",
-        "Real measured PV data are scarce for many regions, including the area around our campus, so a **clearly "
-        "labelled demonstration** is needed that does not pretend to be a real validation.",
+        "**Uncertainty from disagreement.** Among the twenty papers, we could not find one that uses the disagreement "
+        "between several NWP models, or between several experts, as an explicit uncertainty signal that also sets "
+        "the width of the interval and the sharpness of a gate. Multi-source NWP is used as input in "
+        "[@zhao2026twostage] and gating on prediction variance in [@wang2025cg], but not the two together.",
+        "**Value of gating.** Mixtures of experts and gating are reported for PV, curtailment and thermal energy "
+        "[@wang2025cg,heidrich2026,seman2026], but whether a learned gate **actually beats a plain average** of the "
+        "experts, and whether it is stable across training runs, needs a direct test for regional PV.",
+        "**Calibration where it matters.** PV series contain exact zeros at night, where a zero-width interval is "
+        "trivially correct. Coverage should therefore be assessed, and conformal calibration fitted, on **daytime** "
+        "points (Section 5.1.7); we found that all-hours coverage hides under-coverage in daylight.",
+        "**Data requirements.** Graph and image methods [@wang2026dgn,lin2025,huang2026,song2025,rastgoo2025,"
+        "wang2026clouddiff] need plant-level networks or image streams. A model that works from a regional "
+        "aggregate and NWP forecasts is useful where these are not available.",
+        "**Reliable comparison.** Differences of a few percent between models can be smaller than the run-to-run "
+        "variation of training. We use several random starts, strong baselines and a second region, and call a "
+        "difference real only when it exceeds that variation.",
+        "**Regions without open data.** For areas such as the one around our campus, a clearly labelled "
+        "**simulated demonstration** is needed that does not pretend to be a real validation.",
     ], numbered=True)
     R.h2("2.3", "Objectives")
     R.body("The objectives of the project, with the way each one is verified, are:")

@@ -361,7 +361,9 @@ def chapter7(R):
         "on South West England, stable across training runs, and its forecast ranges have a better Winkler score than "
         "every stable baseline. After calibration its daytime coverage is within about one percentage point of the 0.80 target on both measured regions.",
         "**What it does not support.** It does not show that adaptive routing or regime-specialised experts improve "
-        "accuracy; the ablations show they do not, and only the dense expert loss was shown to matter. It does not "
+        "accuracy. Mixture-of-experts modules are used successfully in the related studies on PV, curtailment and "
+        "thermal energy [@wang2025cg,heidrich2026,seman2026], but in our regional PV setting the ablations show they "
+        "do not help; only the dense expert loss was shown to matter. It does not "
         "show that ATERNET beats a well-trained LSTM, or that it would stay ahead of LightGBM with more training data.",
         "**Threats to validity.** (i) Only two regions in England. (ii) Baselines were run with defaults and not tuned; "
         "tuning could narrow the gaps. (iii) Three seeds give only rough estimates of variation. (iv) Several design "
