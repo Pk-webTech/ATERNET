@@ -1,0 +1,9 @@
+item,value,calculation
+"Rows in combined dataset (30-min steps, 2023-01-01 to 2026-10-01)",65713,1369 days x 48 + 1
+Columns in combined dataset,43,
+Steps per sample (history 48 + forecast 16),64,48 + 16
+Stride between samples (steps),4,2 hours
+Total samples,16413,"(65713 - 64) / 4 + 1 = 16412.25 -> 16412, +1 = 16413"
+Training samples (70%),11489,16413 x 0.70 = 11489.1
+Validation samples (15%),2462,16413 x 0.15 = 2461.95
+Test samples (15%),2462,16413 x 0.15 = 2461.95
